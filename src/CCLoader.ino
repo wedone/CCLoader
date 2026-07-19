@@ -45,6 +45,7 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
+#include <ESP8266HTTPUpdateServer.h>
 #include <uri/UriRegex.h>
 #include <LittleFS.h>
 #include <FS.h>
@@ -364,6 +365,7 @@ CCLoaderState g_state = STATE_IDLE;
 // 全局对象：HTTP 服务器（80），SSE 服务器（81）
 ESP8266WebServer server(80);
 WiFiServer sseServer(81);
+ESP8266HTTPUpdateServer httpUpdater;  // OTA 升级服务（/update）
 #define SSE_MAX_CLIENTS 4
 WiFiClient sseClients[SSE_MAX_CLIENTS];
 bool sseActive[SSE_MAX_CLIENTS] = {false, false, false, false};
@@ -1335,6 +1337,9 @@ void setup() {
   initWiFi();
 
   initHttpRoutes();
+  // OTA 升级：访问 http://<ip>/update 上传 .bin 即可远程升级固件
+  // LittleFS 保留，配置不丢失。升级后自动重启
+  httpUpdater.setup(&server, "/update");
   sseServer.begin();
   server.begin();
 
@@ -1346,7 +1351,7 @@ void setup() {
     Serial.print("AP IP: ");
     Serial.println(WiFi.softAPIP());
   }
-  Serial.println("HTTP: 80, SSE: 81");
+  Serial.println("HTTP: 80, SSE: 81, OTA: /update");
 
   g_state = STATE_IDLE;
 }

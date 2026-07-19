@@ -31,6 +31,7 @@
 | 固件管理 | LittleFS 中可保存多个 BIN，可删除可重选 |
 | WiFi 配置 | 连接失败自动回退 AP 模式，跨 WiFi 切换无需重启 |
 | 无外部库依赖 | 仅用 ESP8266 Core 自带的 `ESP8266WebServer` + `WiFiServer` |
+| **OTA 远程升级** | 访问 `/update` 上传 `.bin` 即可 WiFi 升级，免拔 TX 线，LittleFS 保留 |
 
 ---
 
@@ -140,7 +141,34 @@ python -m platformio run -t uploadfs --upload-port COM5
 
 > **重要提示**：若 NodeMCU 的 GPIO3 (RX) 已接 CC2530 的 P0_3，烧录/上传前请先**拔掉这根线**，否则 CC2530 的串口输出会干扰 ESP8266 的下载通信，导致 `Failed to connect to ESP8266: Timed out waiting for packet header` 错误。其他 3 根线（RST/DC/DD）可保留不动。
 
-### 4.5 首次启动 + 配网
+### 4.5 OTA 远程升级（推荐，免拔线）
+
+首次用 USB 烧录后，后续固件升级**全部走 WiFi**，无需再拔 TX 线：
+
+#### 方式 A：浏览器上传
+
+1. 浏览器访问 `http://<ESP8266-IP>/update`
+2. 选择 `.pio/build/nodemcuv2/firmware.bin`
+3. 点 "Update" → 等待 10-30 秒 → 自动重启
+
+#### 方式 B：curl 命令
+
+```bash
+curl -F "image=@.pio/build/nodemcuv2/firmware.bin" http://10.0.0.147/update
+```
+
+返回 `Update Success: ...` 表示成功，ESP8266 自动重启加载新固件。
+
+#### 特性
+
+- **LittleFS 保留**：`/config.json`、已上传的 BIN 文件全部不丢
+- **配置不丢失**：WiFi 配置、监控波特率等保持
+- **无需重启**：升级完自动重启
+- **无鉴权**：局域网内任意设备可调用（与 API 一致）
+
+> 升级期间（约 10-30 秒）HTTP/SSE 暂不可用，浏览器会断连，重启后自动恢复。
+
+### 4.6 首次启动 + 配网
 
 1. 上传完成后，NodeMCU 自动重启
 2. 默认 WiFi 配置为空，ESP8266 进入 **配网模式**（开放 AP，无密码）
@@ -177,7 +205,7 @@ Connected, IP: 192.168.1.100
 
 11. 之后用任何连同一 WiFi 的设备访问 `http://192.168.1.100/` 即可
 
-### 4.6 修改 WiFi 配置
+### 4.7 修改 WiFi 配置
 
 若需切换 WiFi：在 WebUI "设置"页"WiFi 配网"卡片重新扫描+连接即可，**无需重启**。若忘记当前 WiFi 密码，可长按 NodeMCU 的 FLASH 按键 + 复位进入下载模式重新烧录固件，或删除 LittleFS 中的 `/config.json` 重置配置。
 
