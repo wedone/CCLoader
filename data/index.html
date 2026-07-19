@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CCLoader WebUI</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div class="title">CCLoader WebUI</div>
+    <div class="status-bar">
+      <span id="state-badge" class="badge idle">空闲</span>
+      <span id="ip-info">IP: -</span>
+      <span id="ws-state">未连接</span>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="burn">烧录</button>
+    <button class="tab-btn" data-tab="monitor">监控</button>
+    <button class="tab-btn" data-tab="settings">设置</button>
+  </nav>
+
+  <main>
+    <!-- 烧录页 -->
+    <section id="tab-burn" class="tab-content active">
+      <h2>烧录 CC2530</h2>
+
+      <div class="card">
+        <h3>上传固件</h3>
+        <input type="file" id="file-input" accept=".bin,.hex">
+        <button id="upload-btn" class="btn">上传</button>
+        <div id="upload-progress" class="progress-text"></div>
+      </div>
+
+      <div class="card">
+        <h3>已上传固件</h3>
+        <div id="file-list"></div>
+      </div>
+
+      <div class="card">
+        <h3>烧录</h3>
+        <div>选中: <span id="selected-file">未选择</span></div>
+        <label><input type="checkbox" id="verify-check"> 烧录后校验</label>
+        <button id="burn-btn" class="btn primary">开始烧录</button>
+
+        <div class="progress-container">
+          <div class="progress-bar">
+            <div id="burn-progress-bar" class="progress-fill"></div>
+          </div>
+          <div id="burn-progress-text" class="progress-text">0%</div>
+        </div>
+
+        <div class="log-area" id="burn-log"></div>
+      </div>
+    </section>
+
+    <!-- 监控页 -->
+    <section id="tab-monitor" class="tab-content">
+      <h2>串口监控</h2>
+
+      <div class="card">
+        <label>波特率:
+          <select id="baud-select">
+            <option value="9600">9600</option>
+            <option value="19200">19200</option>
+            <option value="38400">38400</option>
+            <option value="57600">57600</option>
+            <option value="115200" selected>115200</option>
+            <option value="230400">230400</option>
+          </select>
+        </label>
+        <button id="monitor-start-btn" class="btn primary">开始监控</button>
+        <button id="monitor-stop-btn" class="btn" disabled>停止</button>
+      </div>
+
+      <div class="card">
+        <div class="toolbar">
+          <button id="pause-btn" class="btn" disabled>暂停</button>
+          <button id="clear-btn" class="btn" disabled>清空</button>
+          <button id="download-btn" class="btn" disabled>下载</button>
+          <input type="text" id="search-input" placeholder="搜索过滤..." disabled>
+        </div>
+
+        <div id="monitor-log" class="log-area"></div>
+
+        <div class="status-bar">
+          <span>接收: <span id="bytes-received">0</span> 字节</span>
+          <span id="monitor-state">未开始</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 设置页 -->
+    <section id="tab-settings" class="tab-content">
+      <h2>设置</h2>
+
+      <div class="card">
+        <h3>WiFi 配置</h3>
+        <label>SSID: <input type="text" id="wifi-ssid"></label>
+        <label>密码: <input type="password" id="wifi-password"></label>
+        <button id="save-wifi-btn" class="btn primary">保存</button>
+      </div>
+
+      <div class="card">
+        <h3>默认监控</h3>
+        <label>波特率:
+          <select id="default-baud-select">
+            <option value="9600">9600</option>
+            <option value="19200">19200</option>
+            <option value="38400">38400</option>
+            <option value="57600">57600</option>
+            <option value="115200" selected>115200</option>
+            <option value="230400">230400</option>
+          </select>
+        </label>
+        <button id="save-monitor-btn" class="btn primary">保存</button>
+      </div>
+
+      <div class="card">
+        <h3>默认烧录</h3>
+        <label><input type="checkbox" id="default-verify-check"> 烧录后校验</label>
+        <button id="save-burn-btn" class="btn primary">保存</button>
+      </div>
+
+      <div class="card">
+        <h3>设备信息</h3>
+        <div>固件版本: CCLoader-WebUI v1.0</div>
+        <div>运行时长: <span id="uptime">-</span></div>
+        <div>WiFi 信号: <span id="rssi">-</span> dBm</div>
+        <div>IP 地址: <span id="device-ip">-</span></div>
+        <button id="reboot-btn" class="btn danger">重启 ESP8266</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

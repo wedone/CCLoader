@@ -1,0 +1,6 @@
+{
+  "wifi_ssid": "",
+  "wifi_password": "",
+  "monitor_baud": 115200,
+  "verify": false
+}
