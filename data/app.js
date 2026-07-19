@@ -96,6 +96,9 @@ function connectSSE() {
       case 'monitor_stop':
         onMonitorStop();
         break;
+      case 'monitor_reset':
+        onMonitorReset();
+        break;
       case 'wifi_connected':
         if (msg.ip) {
           $('wifi-connect-status').innerHTML =
@@ -415,12 +418,13 @@ function updateBurnProgress(msg) {
 // ===== 监控 =====
 $('monitor-start-btn').addEventListener('click', async () => {
   const baud = parseInt($('baud-select').value);
+  const autoReset = $('auto-reset-check').checked;
   $('monitor-start-btn').disabled = true;
   try {
     const resp = await fetch('/api/monitor', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ baud: baud })
+      body: JSON.stringify({ baud: baud, auto_reset: autoReset })
     });
     const result = await resp.json();
     if (!result.success) {
@@ -431,6 +435,25 @@ $('monitor-start-btn').addEventListener('click', async () => {
   } catch (e) {
     alert('请求失败: ' + e.message);
     $('monitor-start-btn').disabled = false;
+  }
+});
+
+// 手动复位 CC2530（监控中也可用，复位后从 main() 重新输出日志）
+$('reset-cc-btn').addEventListener('click', async () => {
+  $('reset-cc-btn').disabled = true;
+  try {
+    const resp = await fetch('/api/reset', { method: 'POST' });
+    const result = await resp.json();
+    if (result.success) {
+      // 监控中复位会收到 monitor_reset 事件清空日志
+      // 非监控中只复位硬件
+    } else {
+      alert('复位失败: ' + (result.error || '未知错误'));
+    }
+  } catch (e) {
+    alert('请求失败: ' + e.message);
+  } finally {
+    $('reset-cc-btn').disabled = false;
   }
 });
 
@@ -449,11 +472,17 @@ function onMonitorStart(baud) {
   $('monitor-state').textContent = '监控中 @ ' + baud + ' bps';
   $('monitor-start-btn').disabled = true;
   $('monitor-stop-btn').disabled = false;
+  $('reset-cc-btn').disabled = false;
   $('pause-btn').disabled = false;
   $('clear-btn').disabled = false;
   $('download-btn').disabled = false;
   $('search-input').disabled = false;
-  appendLog($('monitor-log'), '监控开始 @ ' + baud + ' bps，按 CC2530 RESET 可看启动日志', 'success');
+  const autoReset = $('auto-reset-check').checked;
+  if (autoReset) {
+    appendLog($('monitor-log'), '监控开始 @ ' + baud + ' bps（已自动复位 CC2530）', 'success');
+  } else {
+    appendLog($('monitor-log'), '监控开始 @ ' + baud + ' bps，点"复位 CC2530"看启动日志', 'success');
+  }
 }
 
 function onMonitorStop() {
@@ -461,9 +490,19 @@ function onMonitorStop() {
   $('monitor-state').textContent = '已停止';
   $('monitor-start-btn').disabled = false;
   $('monitor-stop-btn').disabled = true;
+  $('reset-cc-btn').disabled = true;
   $('pause-btn').disabled = true;
   $('pause-btn').textContent = '暂停';
   appendLog($('monitor-log'), '监控已停止', 'error');
+}
+
+// 监控中收到 monitor_reset 事件：CC2530 已复位，清空日志区准备接收启动日志
+function onMonitorReset() {
+  monitorBytes = 0;
+  monitorBuffer = '';
+  $('bytes-received').textContent = '0';
+  $('monitor-log').innerHTML = '';
+  appendLog($('monitor-log'), 'CC2530 已复位，等待启动日志...', 'success');
 }
 
 function appendMonitorData(data) {

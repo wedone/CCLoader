@@ -72,8 +72,11 @@
             <option value="230400">230400</option>
           </select>
         </label>
+        <label><input type="checkbox" id="auto-reset-check" checked> 开始时自动复位 CC2530</label>
         <button id="monitor-start-btn" class="btn primary">开始监控</button>
         <button id="monitor-stop-btn" class="btn" disabled>停止</button>
+        <button id="reset-cc-btn" class="btn" disabled>复位 CC2530</button>
+        <div class="hint">自动复位 = 进入监控时拉低 RESETn 10ms，捕获从 main() 第一行开始的完整启动日志</div>
       </div>
 
       <div class="card">

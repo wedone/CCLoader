@@ -785,8 +785,10 @@ void burnFromLittleFS(const String& filename, bool verify) {
     g_burn.current_block = blockIndex;
     g_burn.percent = (blockIndex * 100) / g_burn.total_blocks;
 
-    // 每 4 块推送一次进度，并处理 WiFi 防止前端断连
-    if (blockIndex % 4 == 0 || blockIndex == g_burn.total_blocks) {
+    // 每 32 块推送一次进度 + 处理 WiFi（约 16 次/256KB）
+    // 频率太高会严重拖慢烧录（handleClient 阻塞 + 浏览器轮询）
+    // 32 块 ≈ 16KB，进度条每 6% 更新一次，体感流畅
+    if (blockIndex % 32 == 0 || blockIndex == g_burn.total_blocks) {
       pushBurnProgress();
       sseLoop();
       server.handleClient();
@@ -799,8 +801,24 @@ void burnFromLittleFS(const String& filename, bool verify) {
   pushBurnProgress();
 }
 
+// ===== CC2530 复位（通过 GPIO5/RESETn 控制，无需手动按按钮）=====
+// 拉低 RESETn 10ms 再拉高，CC2530 重新从 main() 开始执行
+void resetCC2530() {
+  digitalWrite(DD, LOW);
+  digitalWrite(DC, LOW);
+  digitalWrite(RESET, LOW);
+  delay(10);
+  digitalWrite(RESET, HIGH);
+  delay(10);
+}
+
 // ===== 监控模式：Serial 接收 CC2530 日志并推送 =====
-void enterMonitorMode(uint32_t baud) {
+// autoReset=true 时进入监控前自动复位 CC2530，可捕获 main() 启动日志
+void enterMonitorMode(uint32_t baud, bool autoReset) {
+  // 先复位 CC2530（在 Serial 切换前，确保从启动日志开始捕获）
+  if (autoReset) {
+    resetCC2530();
+  }
   // 切换 Serial 到 CC2530 波特率，GPIO3 接收 P0_3 日志
   Serial.flush();
   Serial.end();
@@ -1017,13 +1035,14 @@ void handleMonitor() {
   }
   String body = server.arg("plain");
   uint32_t baud = (uint32_t)jsonGetInt(body, "baud", 115200);
+  bool autoReset = jsonGetBool(body, "auto_reset", true);  // 默认自动复位
   if (baud < 9600 || baud > 230400) {
     server.send(400, "application/json", "{\"error\":\"invalid baud\"}");
     return;
   }
   server.send(200, "application/json", "{\"success\":true,\"baud\":" + String(baud) + "}");
   digitalWrite(LED, HIGH);
-  enterMonitorMode(baud);
+  enterMonitorMode(baud, autoReset);
 }
 
 void handleStop() {
@@ -1032,6 +1051,30 @@ void handleStop() {
     digitalWrite(LED, LOW);
   }
   server.send(200, "application/json", "{\"success\":true}");
+}
+
+// 手动复位 CC2530（通过 GPIO5/RESETn）
+// 监控中也可调用：复位后 CC2530 重新启动，可捕获 main() 日志
+void handleResetCC2530() {
+  if (g_state == STATE_BURNING) {
+    server.send(409, "application/json", "{\"error\":\"busy\"}");
+    return;
+  }
+  // 监控中复位：先暂停接收，复位后继续
+  bool wasMonitoring = (g_state == STATE_MONITORING);
+  if (wasMonitoring) {
+    // 推送剩余数据
+    if (g_monitor_len > 0) pushMonitorData();
+    g_monitor_len = 0;
+    g_monitor_bytes_total = 0;
+  }
+  resetCC2530();
+  server.send(200, "application/json", "{\"success\":true}");
+  // 如果在监控中，通知前端清空日志区
+  if (wasMonitoring) {
+    String json = "{\"type\":\"monitor_reset\"}";
+    sseSend(json);
+  }
 }
 
 void handleFiles() {
@@ -1145,6 +1188,7 @@ void initHttpRoutes() {
   server.on("/api/burn", HTTP_POST, handleBurn);
   server.on("/api/monitor", HTTP_POST, handleMonitor);
   server.on("/api/stop", HTTP_POST, handleStop);
+  server.on("/api/reset", HTTP_POST, handleResetCC2530);
   server.on("/api/files", HTTP_GET, handleFiles);
   // /api/files/{name} - 用正则通配符
   server.on(UriRegex("^/api/files/([^/]+)$"), HTTP_DELETE, handleDeleteFile);
