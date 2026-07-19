@@ -131,13 +131,25 @@ python -m platformio run -t upload --upload-port COM5
 
 ### 4.4 上传 WebUI 静态文件到 LittleFS
 
-固件本身不包含 `index.html` 等前端文件，需要单独上传到 LittleFS 文件系统：
+> **新版固件（commit 439a693 之后）已将 WebUI 静态资源内嵌到固件中（PROGMEM），OTA 升级即可更新页面，无需 uploadfs。** LittleFS 中的 `index.html` / `style.css` / `app.js` 不再必需。
+>
+> 仅当需要存储用户上传的 BIN 文件时，LittleFS 才需要格式化一次（首次烧录固件时通常会自动处理）。
+
+如需修改 `data/` 目录下的页面文件并重新内嵌：
 
 ```bash
-python -m platformio run -t uploadfs --upload-port COM5
+# 1. 修改 data/index.html / style.css / app.js
+# 2. 重新生成内嵌资源头文件
+python tools/gen_web_assets.py
+# 3. 编译 + OTA 升级
+python -m platformio run
+curl -F "image=@.pio/build/nodemcuv2/firmware.bin" http://10.0.0.147/update
 ```
 
-> 每次更新 `data/` 目录下的 `index.html` / `style.css` / `app.js` / `config.json` 后，都要重新执行此命令。
+> 旧版固件（无内嵌资源）仍可通过 uploadfs 上传到 LittleFS：
+> ```bash
+> python -m platformio run -t uploadfs --upload-port COM5
+> ```
 
 > **重要提示**：若 NodeMCU 的 GPIO3 (RX) 已接 CC2530 的 P0_3，烧录/上传前请先**拔掉这根线**，否则 CC2530 的串口输出会干扰 ESP8266 的下载通信，导致 `Failed to connect to ESP8266: Timed out waiting for packet header` 错误。其他 3 根线（RST/DC/DD）可保留不动。
 

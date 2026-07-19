@@ -20,6 +20,7 @@
     <button class="tab-btn active" data-tab="burn">烧录</button>
     <button class="tab-btn" data-tab="monitor">监控</button>
     <button class="tab-btn" data-tab="settings">设置</button>
+    <button class="tab-btn" data-tab="help">帮助</button>
   </nav>
 
   <main>
@@ -142,6 +143,164 @@
         <div>WiFi 信号: <span id="rssi">-</span> dBm</div>
         <div>IP 地址: <span id="device-ip">-</span></div>
         <button id="reboot-btn" class="btn danger">重启 ESP8266</button>
+      </div>
+    <!-- 帮助页 -->
+    <section id="tab-help" class="tab-content">
+      <h2>帮助</h2>
+
+      <div class="card">
+        <h3>接线方法</h3>
+        <div class="hint">NodeMCU ESP8266 与 CC2530 模块共需要 5 根线（含共地）</div>
+        <table class="pin-table">
+          <thead>
+            <tr><th>ESP8266 GPIO</th><th>NodeMCU 丝印</th><th>方向</th><th>CC2530 引脚</th><th>用途</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>GPIO5</td><td>D1</td><td>→</td><td>Pin 7 (RESETn)</td><td>CC Debug 复位</td></tr>
+            <tr><td>GPIO4</td><td>D2</td><td>→</td><td>Pin 3 (DC)</td><td>CC Debug 时钟</td></tr>
+            <tr><td>GPIO12</td><td>D6</td><td>↔</td><td>Pin 4 (DD)</td><td>CC Debug 数据</td></tr>
+            <tr><td>GPIO3</td><td>RX</td><td>←</td><td>P0_3 (UART0 TX)</td><td>监控串口日志</td></tr>
+            <tr><td>GND</td><td>GND</td><td>—</td><td>GND</td><td>共地（必须）</td></tr>
+          </tbody>
+        </table>
+        <pre class="ascii-art">   NodeMCU ESP8266                     CC2530 模块
+  ┌────────────────┐                ┌─────────────────┐
+  │            3V3 ├───────────────►│ VCC             │
+  │            GND │◄──────────────►│ GND             │
+  │  D1 (GPIO5)    ├───────────────►│ Pin 7 RESETn    │
+  │  D2 (GPIO4)    ├───────────────►│ Pin 3 DC        │
+  │  D6 (GPIO12)   │◄──────────────►│ Pin 4 DD        │
+  │  RX (GPIO3)    │◄───────────────│ P0_3 UART0 TX   │
+  └────────────────┘                └─────────────────┘</pre>
+        <div class="hint">CC2530 的 3.3V 可从 NodeMCU 的 3V3 引脚取，电流 &lt; 50mA</div>
+      </div>
+
+      <div class="card">
+        <h3>首次使用流程</h3>
+        <ol class="step-list">
+          <li>按上表接好 5 根线（CC2530 模块先不接 3V3 电源）</li>
+          <li>USB 接 NodeMCU 到电脑，首次烧录固件 + 上传 LittleFS：<br>
+            <code>pip install platformio</code><br>
+            <code>python -m platformio run -t upload --upload-port COM5</code><br>
+            <code>python -m platformio run -t uploadfs --upload-port COM5</code>
+          </li>
+          <li>烧录时 CC2530 的 TX 线（P0_3 → RX）要拔掉，避免干扰 ESP8266 下载</li>
+          <li>烧完后插回 TX 线，给 CC2530 通电</li>
+          <li>手机/电脑连 WiFi <code>CCLoader-Setup</code>（首次无密码）</li>
+          <li>浏览器访问 <code>http://192.168.4.1/</code>，在"设置"页配 WiFi</li>
+          <li>连上 WiFi 后，访问 ESP8266 的新 IP 即可使用</li>
+        </ol>
+      </div>
+
+      <div class="card">
+        <h3>API 用法（自动化调用）</h3>
+        <div class="hint">无鉴权，局域网内任意设备可调用。完整流程：上传 BIN → 烧录 → 监控</div>
+        <pre class="code-block">#!/bin/bash
+IP=10.0.0.147
+BIN=DIYRuZRT_256k.bin
+
+# 1. 上传 BIN（multipart/form-data）
+curl -s -F "file=@${BIN}" http://${IP}/api/upload
+# 返回: {"success":true,"filename":"DIYRuZRT_256k.bin","size":262144}
+
+# 2. 异步烧录（立即返回，烧录在后台执行）
+curl -s -X POST "http://${IP}/api/burn?async=1" \
+  -H "Content-Type: application/json" \
+  -d '{"filename":"DIYRuZRT_256k.bin","verify":true}'
+# 返回: {"success":true,"async":true,"task_id":1,"total_blocks":512}
+
+# 3. 轮询状态（每 2 秒）
+curl -s http://${IP}/api/status
+# 返回: {"state":"burning","task_id":1,"burn_pending":false,
+#        "burn":{"percent":50,"current_block":256,"total_blocks":512,...}}
+
+# 4. 烧录完成后启动监控（自动复位 CC2530）
+curl -s -X POST http://${IP}/api/monitor \
+  -H "Content-Type: application/json" \
+  -d '{"baud":115200,"auto_reset":true}'
+
+# 5. 轮询获取日志（断点续传）
+curl -s "http://${IP}/api/monitor/buffer?since=0"
+# 返回: {"success":true,"total":16,"buffered":16,"offset":0,
+#        "data":"<base64>","truncated":false}
+
+# 6. 停止监控
+curl -s -X POST http://${IP}/api/stop</pre>
+      </div>
+
+      <div class="card">
+        <h3>API 端点列表</h3>
+        <table class="pin-table">
+          <thead>
+            <tr><th>方法</th><th>路径</th><th>功能</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>GET</td><td>/api/status</td><td>当前状态（state/burn/monitor/task_id）</td></tr>
+            <tr><td>GET</td><td>/api/files</td><td>列出已上传 BIN</td></tr>
+            <tr><td>POST</td><td>/api/upload</td><td>上传 BIN（multipart, 字段 file）</td></tr>
+            <tr><td>POST</td><td>/api/burn?async=1</td><td>异步烧录（返回 task_id，推荐）</td></tr>
+            <tr><td>POST</td><td>/api/burn</td><td>同步烧录（阻塞至完成）</td></tr>
+            <tr><td>POST</td><td>/api/monitor</td><td>开始监控（body: {baud,auto_reset}）</td></tr>
+            <tr><td>GET</td><td>/api/monitor/buffer?since=N</td><td>获取日志（断点续传）</td></tr>
+            <tr><td>POST</td><td>/api/stop</td><td>停止监控</td></tr>
+            <tr><td>POST</td><td>/api/reset</td><td>复位 CC2530（GPIO5/RESETn）</td></tr>
+            <tr><td>POST</td><td>/api/reboot</td><td>重启 ESP8266</td></tr>
+            <tr><td>GET</td><td>/api/wifi/scan</td><td>扫描 WiFi</td></tr>
+            <tr><td>POST</td><td>/api/wifi/connect</td><td>连接 WiFi（body: {ssid,password}）</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h3>实时事件（SSE 端口 81）</h3>
+        <div class="hint">浏览器 EventSource 自动连接，或用 curl -N 监听</div>
+        <pre class="code-block">curl -N http://10.0.0.147:81/
+
+# 事件类型：
+# {"type":"status","state":"idle|burning|monitoring"}
+# {"type":"burn_progress","percent":50,"current_block":256,...}
+# {"type":"monitor_start","baud":115200}
+# {"type":"monitor_data","data":"<base64>"}
+# {"type":"monitor_reset"}
+# {"type":"monitor_stop"}</pre>
+      </div>
+
+      <div class="card">
+        <h3>OTA 远程升级（免拔线）</h3>
+        <div class="hint">首次 USB 烧录后，后续固件升级走 WiFi，永久免拔 TX 线。升级时 LittleFS 和 WiFi 配置都保留。</div>
+        <ol class="step-list">
+          <li>修改源码或页面文件后，编译固件：<code>python -m platformio run</code></li>
+          <li>浏览器访问 <code>http://&lt;IP&gt;/update</code>，选择 <code>.pio/build/nodemcuv2/firmware.bin</code> 上传</li>
+          <li>等待 10-30 秒，自动重启，固件升级完成</li>
+        </ol>
+        <div class="hint">命令行方式：</div>
+        <pre class="code-block">curl -F "image=@.pio/build/nodemcuv2/firmware.bin" http://10.0.0.147/update
+# 返回: Update Success! Rebooting... 自动重启</pre>
+        <div class="hint">修改 <code>data/</code> 目录下的页面文件后，需重新生成内嵌资源：</div>
+        <pre class="code-block">python tools/gen_web_assets.py  # 重新生成 web_assets.h
+python -m platformio run        # 重新编译
+curl -F "image=@.pio/build/nodemcuv2/firmware.bin" http://10.0.0.147/update</pre>
+        <div class="hint">升级期间 HTTP/SSE 暂不可用（约 10-30 秒），浏览器会断连，重启后自动恢复。</div>
+      </div>
+
+      <div class="card">
+        <h3>常见问题</h3>
+        <div class="faq-item">
+          <div class="faq-q">Q: 烧录 ESP8266 时报 "Timed out waiting for packet header"？</div>
+          <div class="faq-a">A: CC2530 的 TX 线干扰了 ESP8266 GPIO3 (RX)。烧录前先拔掉 CC2530 P0_3 → ESP8266 RX 这根线，烧完再插回。</div>
+        </div>
+        <div class="faq-item">
+          <div class="faq-q">Q: 监控收不到 CC2530 日志？</div>
+          <div class="faq-a">A: 1) 检查 TX 线是否插好；2) 确认 CC2530 已通电；3) 试试不同波特率（115200/57600/9600）；4) 点"复位 CC2530"触发启动日志。</div>
+        </div>
+        <div class="faq-item">
+          <div class="faq-q">Q: 烧录 CC2530 失败？</div>
+          <div class="faq-a">A: 1) 检查 D1/D2/D6 三根线是否接对；2) 确认 CC2530 GND 与 NodeMCU 共地；3) CC2530 需通电（3.3V）。</div>
+        </div>
+        <div class="faq-item">
+          <div class="faq-q">Q: 忘了 WiFi 密码或连不上？</div>
+          <div class="faq-a">A: 在"设置"页重新扫描+连接。若 WebUI 都进不去，删除 LittleFS 中的 /config.json 或重新烧录固件可重置。</div>
+        </div>
       </div>
     </section>
   </main>

@@ -49,6 +49,7 @@
 #include <uri/UriRegex.h>
 #include <LittleFS.h>
 #include <FS.h>
+#include "web_assets.h"  // 内嵌 WebUI 静态资源（OTA 升级时一并更新）
 
 /******************************************************************************
  * DEFINES - CC Debug 协议（原样保留）
@@ -891,26 +892,18 @@ void handleMonitoring() {
 }
 
 // ===== HTTP 路由 =====
+// 优先使用固件内嵌资源（PROGMEM），OTA 升级时一并更新
+// LittleFS 中的同名文件作为备份（旧固件兼容）
 void handleRoot() {
-  fs::File f = LittleFS.open("/index.html", "r");
-  if (f) {
-    server.streamFile(f, "text/html");
-    f.close();
-  } else {
-    server.send(404, "text/plain", "index.html not found. Upload LittleFS data.");
-  }
+  server.send_P(200, "text/html", WebAssets::index_html);
 }
 
 void handleCss() {
-  fs::File f = LittleFS.open("/style.css", "r");
-  if (f) { server.streamFile(f, "text/css"); f.close(); }
-  else server.send(404);
+  server.send_P(200, "text/css", WebAssets::style_css);
 }
 
 void handleJs() {
-  fs::File f = LittleFS.open("/app.js", "r");
-  if (f) { server.streamFile(f, "application/javascript"); f.close(); }
-  else server.send(404);
+  server.send_P(200, "application/javascript", WebAssets::app_js);
 }
 
 void handleStatus() {
