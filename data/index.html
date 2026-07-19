@@ -32,6 +32,7 @@
         <input type="file" id="file-input" accept=".bin,.hex">
         <button id="upload-btn" class="btn">上传</button>
         <div id="upload-progress" class="progress-text"></div>
+        <div class="hint">支持 .bin（直接烧录）和 .hex（自动转换为 BIN，填充到 256KB）</div>
       </div>
 
       <div class="card">
@@ -97,10 +98,17 @@
       <h2>设置</h2>
 
       <div class="card">
-        <h3>WiFi 配置</h3>
-        <label>SSID: <input type="text" id="wifi-ssid"></label>
-        <label>密码: <input type="password" id="wifi-password"></label>
-        <button id="save-wifi-btn" class="btn primary">保存</button>
+        <h3>WiFi 配网</h3>
+        <div id="wifi-mode-hint" class="hint"></div>
+        <div class="wifi-scan-row">
+          <button id="wifi-scan-btn" class="btn">扫描网络</button>
+          <span id="wifi-scan-status" class="progress-text"></span>
+        </div>
+        <div id="wifi-list" class="wifi-list"></div>
+        <label>SSID: <input type="text" id="wifi-ssid" placeholder="点上方扫描或手动输入"></label>
+        <label>密码: <input type="password" id="wifi-password" placeholder="留空表示开放网络"></label>
+        <button id="wifi-connect-btn" class="btn primary">连接</button>
+        <div id="wifi-connect-status" class="progress-text"></div>
       </div>
 
       <div class="card">

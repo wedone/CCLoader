@@ -206,6 +206,35 @@ select:focus {
 .file-item .file-name { cursor: pointer; color: var(--primary); }
 .file-item .file-meta { color: var(--text-muted); font-size: 12px; }
 
+/* WiFi 配网 */
+.hint { color: var(--text-muted); font-size: 12px; margin-top: 6px; }
+.wifi-scan-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.wifi-list {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-bottom: 8px;
+}
+.wifi-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.wifi-item:last-child { border-bottom: none; }
+.wifi-item:hover { background: var(--bg-input); }
+.wifi-item.selected { background: rgba(74, 158, 255, 0.15); }
+.wifi-item .wifi-ssid { color: var(--text); }
+.wifi-item .wifi-meta { color: var(--text-muted); font-size: 12px; }
+.wifi-item .wifi-rssi { font-weight: bold; }
+.wifi-item .wifi-rssi.strong { color: var(--success); }
+.wifi-item .wifi-rssi.medium { color: var(--warning); }
+.wifi-item .wifi-rssi.weak { color: var(--danger); }
+.wifi-item .wifi-lock { color: var(--warning); margin-left: 6px; }
+
 .toolbar {
   display: flex;
   gap: 8px;

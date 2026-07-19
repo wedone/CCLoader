@@ -23,10 +23,12 @@
 |---|---|
 | 跨平台 | Win/Mac/Linux/手机浏览器均可，不再依赖 `CCLoader.exe` |
 | 一键烧录 | 上传 BIN → 选文件 → 点"开始烧录"，实时进度条 |
+| **HEX 直传** | 上传 `.hex` 文件时浏览器自动转换为 BIN（256KB 填充），无需 Python 工具 |
 | 实时监控 | 烧录完自动跳到监控页，按 CC2530 RESET 即可看启动日志 |
 | 无需拔线 | 烧录与监控共用同一套接线，状态机保证互斥 |
+| **智能配网** | AP 模式开放无密码，手机连上后访问任意 URL 自动弹出配网页；扫描列表点选，连接成功自动切换 STA |
 | 固件管理 | LittleFS 中可保存多个 BIN，可删除可重选 |
-| WiFi 配置 | Web 页面填写 SSID/密码，重启后自动连接；连接失败自动回退 AP |
+| WiFi 配置 | 连接失败自动回退 AP 模式，跨 WiFi 切换无需重启 |
 | 无外部库依赖 | 仅用 ESP8266 Core 自带的 `ESP8266WebServer` + `WiFiServer` |
 
 ---
@@ -135,16 +137,25 @@ python -m platformio run -t uploadfs --upload-port COM5
 
 > 每次更新 `data/` 目录下的 `index.html` / `style.css` / `app.js` / `config.json` 后，都要重新执行此命令。
 
-### 4.5 首次启动
+> **重要提示**：若 NodeMCU 的 GPIO3 (RX) 已接 CC2530 的 P0_3，烧录/上传前请先**拔掉这根线**，否则 CC2530 的串口输出会干扰 ESP8266 的下载通信，导致 `Failed to connect to ESP8266: Timed out waiting for packet header` 错误。其他 3 根线（RST/DC/DD）可保留不动。
+
+### 4.5 首次启动 + 配网
 
 1. 上传完成后，NodeMCU 自动重启
-2. 默认 WiFi 配置为空，ESP8266 进入 AP 模式
-3. AP 名称：`CCLoader-Setup`，密码：`12345678`
-4. 电脑/手机连接此 AP
-5. 浏览器访问 <http://192.168.4.1/>
-6. 在"设置"页填入 WiFi SSID 和密码，点"保存"
-7. 点"重启 ESP8266"
-8. 重启后 ESP8266 自动连接你的 WiFi，串口监视器会打印获得的 IP
+2. 默认 WiFi 配置为空，ESP8266 进入 **配网模式**（开放 AP，无密码）
+3. AP 名称：`CCLoader-Setup`
+4. 电脑/手机连接此 AP（**注意：AP 是开放的，无需密码**）
+5. 连上后系统会自动弹出配网页；若无弹出，浏览器访问 <http://192.168.4.1/> 或任意 URL（captive portal 会重定向到主页）
+6. 切到"设置"标签页，找到"WiFi 配网"卡片
+7. 点"扫描网络"，等待 3-5 秒返回可用 WiFi 列表
+8. 列表中点选你的 WiFi（自动填入 SSID），输入密码
+9. 点"连接"按钮
+   - ESP8266 同步尝试连接（8 秒超时）
+   - 成功：自动保存配置 + 切换到 STA 模式，**无需重启**
+   - 失败：自动切回 AP 模式，可重试
+10. 连接成功后页面会显示新 IP，按提示将电脑/手机切回原 WiFi，访问新 IP 即可
+
+> 串口监视器可同步查看连接过程：
 
 ```bash
 python -m platformio device monitor -p COM5 -b 115200
@@ -154,13 +165,20 @@ python -m platformio device monitor -p COM5 -b 115200
 
 ```
 CCLoader WebUI booting...
-Connecting to MyWiFi....
-Connected, IP: 192.168.1.100
+Config mode (no config): AP 'CCLoader-Setup' open, IP: 192.168.4.1
 CCLoader WebUI ready
 HTTP: 80, SSE: 81
+WiFi scan start...
+WiFi scan done, found 12 networks
+Trying connect to MyWiFi ...
+Connected, IP: 192.168.1.100
 ```
 
-9. 之后用任何连同一 WiFi 的设备访问 `http://192.168.1.100/` 即可
+11. 之后用任何连同一 WiFi 的设备访问 `http://192.168.1.100/` 即可
+
+### 4.6 修改 WiFi 配置
+
+若需切换 WiFi：在 WebUI "设置"页"WiFi 配网"卡片重新扫描+连接即可，**无需重启**。若忘记当前 WiFi 密码，可长按 NodeMCU 的 FLASH 按键 + 复位进入下载模式重新烧录固件，或删除 LittleFS 中的 `/config.json` 重置配置。
 
 ---
 
@@ -170,7 +188,13 @@ HTTP: 80, SSE: 81
 
 1. 浏览器访问 ESP8266 的 IP（如 `http://192.168.1.100/`）
 2. 默认在"烧录"标签页
-3. 在"上传固件"区域点"选择文件"，选 BIN 文件（如 `DIYRuZRT_256k.bin`），点"上传"
+3. 在"上传固件"区域点"选择文件"，选 BIN 或 HEX 文件
+   - **BIN 文件**：直接上传（如 `DIYRuZRT_256k.bin`）
+   - **HEX 文件**：浏览器自动转换为 BIN（参考 `diyruz_rt/Tools/hex2bin.py`）
+     - 支持 Intel HEX 全部记录类型（00 数据/01 结束/02 段地址/04 线性地址/05 起始地址）
+     - 自动校验每行 checksum，失败会提示行号
+     - 自动填充 0xFF 到 256KB（0x40000），适配 CCLoader 要求
+     - 转换日志会显示在上传区域：数据记录数、地址范围、BIN 大小等
 4. 上传成功后，下方"已上传固件"列表会出现该文件
 5. 点文件名选中（蓝色边框高亮）
 6. 可选勾选"烧录后校验"
@@ -178,6 +202,8 @@ HTTP: 80, SSE: 81
    - 进度条实时显示百分比和块进度
    - 日志区显示"开始烧录"、"总块数"、"烧录完成"
 8. 烧录完成后 1 秒自动跳到"监控"标签页
+
+> HEX 转 BIN 在浏览器端完成，不占用 ESP8266 资源。256KB 的 BIN 上传到 LittleFS 约需 5-10 秒。
 
 ### 5.2 监控 CC2530 串口
 
@@ -253,6 +279,8 @@ HTTP: 80, SSE: 81
   - `GET /api/files` - 已上传 BIN 列表
   - `DELETE /api/files/{name}` - 删除 BIN
   - `POST /api/reboot` - 重启 ESP8266
+  - `GET /api/wifi/scan` - 扫描周围 WiFi，返回 SSID/RSSI/加密类型
+  - `POST /api/wifi/connect` - 连接指定 WiFi（body: `{ssid, password}`），成功后切换 STA 模式
 
 - **SSE 事件**（端口 81，`event: message`，`data` 为 JSON）：
   - `{"type":"status","state":"idle|burning|monitoring"}`
@@ -260,6 +288,8 @@ HTTP: 80, SSE: 81
   - `{"type":"monitor_start","baud":115200}`
   - `{"type":"monitor_data","data":"<base64>"}` - 监控数据 Base64 编码
   - `{"type":"monitor_stop"}`
+  - `{"type":"wifi_connected","ssid":"...","ip":"192.168.x.x"}` - WiFi 连接成功
+  - `{"type":"wifi_connect_failed","ssid":"..."}` - WiFi 连接失败
 
 ### 6.4 无外部库依赖
 
@@ -282,18 +312,22 @@ HTTP: 80, SSE: 81
 | `'UriRegex' was not declared` | 未包含头文件 | 已在源码顶部 `#include <uri/UriRegex.h>` |
 | `LittleFS mount failed!` | 未执行 `uploadfs` | 见 4.4 节 |
 | `platforms.lock` 沙箱阻止 | PlatformIO 试图写用户目录 | 用管理员权限运行，或检查杀软白名单 |
+| `Failed to connect to ESP8266: Timed out waiting for packet header` | GPIO3 (RX) 接到 CC2530 P0_3，CC2530 输出干扰 ESP8266 下载 | **拔掉 GPIO3↔P0_3 的连接线后重试**；或按住 FLASH + RESET 进入强制下载模式 |
 
 ### 7.2 运行时
 
 | 现象 | 排查 |
 |---|---|
 | 浏览器打不开 IP | 1. 确认电脑/手机与 ESP8266 在同一 WiFi<br>2. 串口监视器看启动日志中的 IP<br>3. 防火墙放行 80/81 端口（仅本机测试时） |
-| 启动后 AP 模式而不是连 WiFi | 1. 检查设置的 SSID 是否正确（大小写敏感）<br>2. 重新进入 AP（`CCLoader-Fallback`）改配置 |
+| 启动后是 AP 模式（`CCLoader-Setup`）而不是连 WiFi | 1. 之前未配网；2. 配置的 WiFi 连不上（密码错/信号弱）；进入"设置"页重新配网 |
+| 配网连接失败 | 1. 密码错误（最常见）<br>2. WiFi 信号弱（RSSI < -85dBm）<br>3. SSID 含中文或特殊字符（建议 ASCII）<br>4. ESP8266 仅支持 2.4GHz，5GHz 无法连接 |
+| 手机连 AP 后未自动弹出配网页 | 1. 访问任意 URL（如 `http://1.2.3.4/`）触发 captive portal<br>2. 或直接访问 <http://192.168.4.1/> |
 | SSE 一直"已断开" | 1. 端口 81 被防火墙拦截<br>2. 浏览器扩展拦截 EventSource<br>3. ESP8266 重启中，等 2 秒会自动重连 |
 | 烧录卡 0% 不动 | 1. CC2530 没接好（检查 4 根线）<br>2. CC2530 已锁死（接错电源）<br>3. 看 SSE 日志区的错误信息 |
 | 烧录报 `chip not detected` | 1. DD/DC/RESET 三根线任一接错<br>2. CC2530 模块没供电<br>3. 共地未连接 |
 | 烧录报 `XOSC timeout` | CC2530 外部晶振未起振 | 模块硬件问题，更换 |
 | 烧录报 `verify failed at block N` | 1. DD 线接触不良<br>2. Flash 寿命耗尽 | 重新插紧；或换 CC2530 |
+| HEX 转换失败 | 1. 文件不是标准 Intel HEX 格式<br>2. 检查行号提示，定位出错行<br>3. 用 `python hex2bin.py xx.hex` 验证 |
 | 监控无数据 | 1. P0_3 → RX 接错<br>2. 波特率不对（PTVO 默认 115200，部分 Z-Stack 用 57600）<br>3. CC2530 固件未配置 UART0 输出 |
 | 监控有乱码 | 波特率不匹配 | 改波特率重试，常见：9600/57600/115200/230400 |
 | 监控卡顿、丢数据 | WiFi 信号差 | RSSI 应 > -75dBm；或缩短距离 |

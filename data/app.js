@@ -96,6 +96,19 @@ function connectSSE() {
       case 'monitor_stop':
         onMonitorStop();
         break;
+      case 'wifi_connected':
+        if (msg.ip) {
+          $('wifi-connect-status').innerHTML =
+            '<strong style="color: var(--success)">连接成功！</strong> 新 IP: ' + msg.ip +
+            '<br>请切换到 ' + msg.ssid + ' WiFi 后访问 http://' + msg.ip + '/';
+        }
+        break;
+      case 'wifi_connect_failed':
+        $('wifi-connect-status').innerHTML =
+          '<strong style="color: var(--danger)">连接失败</strong>：' + (msg.ssid || '') +
+          ' 密码错误或信号太弱，ESP8266 已切回 AP 模式';
+        $('wifi-connect-btn').disabled = false;
+        break;
       case 'status':
         if (msg.state) setStateBadge(msg.state);
         break;
@@ -122,6 +135,102 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   });
 });
 
+// ===== hex2bin：Intel HEX 转 BIN（参考 diyruz_rt/Tools/hex2bin.py）=====
+// 返回 { bin: Uint8Array, log: [strings], name: string }
+async function hex2bin(file) {
+  const log = [];
+  log.push('HEX 文件: ' + file.name);
+
+  const text = await file.text();
+  const lines = text.split(/\r?\n/);
+  log.push('总行数: ' + lines.length);
+
+  // 数据映射：addr -> Uint8Array
+  const dataMap = new Map();
+  let baseAddr = 0x00000;
+  let minAddr = null, maxAddr = null;
+  let countType0 = 0, countType4 = 0, countType2 = 0;
+
+  for (let lineNo = 0; lineNo < lines.length; lineNo++) {
+    const line = lines[lineNo].trim();
+    if (!line || line[0] !== ':') continue;
+
+    // 解析 hex 字节
+    const raw = [];
+    for (let i = 1; i + 1 < line.length; i += 2) {
+      const b = parseInt(line.substr(i, 2), 16);
+      if (isNaN(b)) throw new Error('line ' + (lineNo + 1) + ': 非法 hex 字符');
+      raw.push(b);
+    }
+    if (raw.length < 5) continue;
+
+    const bCount = raw[0];
+    const bAddr = (raw[1] << 8) | raw[2];
+    const bType = raw[3];
+    const data = raw.slice(4, 4 + bCount);
+
+    // 校验和验证
+    let sum = 0;
+    for (let i = 0; i < raw.length - 1; i++) sum = (sum + raw[i]) & 0xFF;
+    const csum = raw[raw.length - 1];
+    if (((sum + csum) & 0xFF) !== 0) {
+      throw new Error('line ' + (lineNo + 1) + ': 校验和错误');
+    }
+
+    if (bType === 0x01) {
+      // 结束记录
+      break;
+    } else if (bType === 0x02) {
+      // 扩展段地址
+      baseAddr = ((data[0] << 8) | data[1]) << 4;
+      countType2++;
+    } else if (bType === 0x04) {
+      // 扩展线性地址
+      baseAddr = ((data[0] << 8) | data[1]) << 16;
+      countType4++;
+    } else if (bType === 0x05) {
+      // 起始线性地址，忽略
+    } else if (bType === 0x00) {
+      // 数据记录
+      const physAddr = baseAddr + bAddr;
+      dataMap.set(physAddr, new Uint8Array(data));
+      if (minAddr === null || physAddr < minAddr) minAddr = physAddr;
+      const endAddr = physAddr + data.length - 1;
+      if (maxAddr === null || endAddr > maxAddr) maxAddr = endAddr;
+      countType0++;
+    } else {
+      log.push('警告 line ' + (lineNo + 1) + ': 未知记录类型 0x' + bType.toString(16));
+    }
+  }
+
+  if (minAddr === null) throw new Error('HEX 文件无数据记录');
+
+  log.push('数据记录 type00: ' + countType0);
+  log.push('扩展线性地址 type04: ' + countType4);
+  log.push('扩展段地址 type02: ' + countType2);
+  log.push('地址范围: 0x' + minAddr.toString(16) + ' - 0x' + maxAddr.toString(16));
+  const dataSpan = maxAddr - minAddr + 1;
+  log.push('数据跨度: ' + dataSpan + ' 字节 (' + (dataSpan / 1024).toFixed(1) + ' KB)');
+
+  // CC2530 要求 256KB 完整 BIN
+  const padTo = 0x40000;  // 256KB
+  const binSize = Math.max(maxAddr + 1, padTo);
+  const padBytes = binSize - (maxAddr + 1);
+  log.push('BIN 大小: ' + binSize + ' 字节 (' + (binSize / 1024).toFixed(1) + ' KB)');
+  log.push('尾部填充 0xFF: ' + padBytes + ' 字节 (' + (padBytes / 1024).toFixed(1) + ' KB)');
+
+  // 构造 BIN
+  const bin = new Uint8Array(binSize);
+  bin.fill(0xFF);
+  for (const [addr, data] of dataMap) {
+    bin.set(data, addr);
+  }
+
+  // 输出文件名
+  const baseName = file.name.replace(/\.hex$/i, '');
+  return { bin: bin, log: log, name: baseName + '.bin' };
+}
+
 // ===== 文件上传 =====
 $('upload-btn').addEventListener('click', async () => {
   const input = $('file-input');
@@ -130,17 +239,42 @@ $('upload-btn').addEventListener('click', async () => {
     return;
   }
   const file = input.files[0];
-  const formData = new FormData();
-  formData.append('file', file);
+  const isHex = /\.hex$/i.test(file.name);
 
   $('upload-btn').disabled = true;
-  $('upload-progress').textContent = '上传中...';
 
   try {
+    let uploadFile;
+    let uploadName;
+    if (isHex) {
+      $('upload-progress').textContent = 'HEX → BIN 转换中...';
+      try {
+        const result = await hex2bin(file);
+        uploadFile = new Blob([result.bin], { type: 'application/octet-stream' });
+        uploadName = result.name;
+        // 显示转换日志
+        $('upload-progress').innerHTML = result.log.join('<br>');
+      } catch (e) {
+        $('upload-progress').textContent = 'HEX 转换失败: ' + e.message;
+        return;
+      }
+    } else {
+      uploadFile = file;
+      uploadName = file.name;
+      $('upload-progress').textContent = '上传中...';
+    }
+
+    const formData = new FormData();
+    formData.append('file', uploadFile, uploadName);
+
+    if (!isHex) $('upload-progress').textContent = '上传中...';
+    else $('upload-progress').innerHTML += '<br>上传中...';
+
     const resp = await fetch('/api/upload', { method: 'POST', body: formData });
     const result = await resp.json();
     if (result.success) {
-      $('upload-progress').textContent = '上传成功: ' + result.filename + ' (' + result.size + ' 字节)';
+      const html = isHex ? $('upload-progress').innerHTML + '<br>' : '';
+      $('upload-progress').innerHTML = html + '上传成功: ' + result.filename + ' (' + result.size + ' 字节)';
       refreshFileList();
     } else {
       $('upload-progress').textContent = '上传失败: ' + (result.error || '未知错误');
@@ -395,18 +529,122 @@ async function loadConfig() {
   }
 }
 
-$('save-wifi-btn').addEventListener('click', async () => {
-  const cfg = {
-    wifi_ssid: $('wifi-ssid').value,
-    wifi_password: $('wifi-password').value
-  };
-  const resp = await fetch('/api/config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(cfg)
-  });
-  const r = await resp.json();
-  alert(r.success ? '已保存，重启后生效' : '保存失败: ' + r.error);
+// ===== WiFi 配网 =====
+function rssiClass(rssi) {
+  if (rssi >= -55) return 'strong';
+  if (rssi >= -75) return 'medium';
+  return 'weak';
+}
+
+function rssiLabel(rssi) {
+  if (rssi >= -55) return '强';
+  if (rssi >= -75) return '中';
+  return '弱';
+}
+
+async function scanWifi() {
+  $('wifi-scan-btn').disabled = true;
+  $('wifi-scan-status').textContent = '扫描中...';
+  $('wifi-list').innerHTML = '';
+  try {
+    const resp = await fetch('/api/wifi/scan');
+    const result = await resp.json();
+    if (!result.success) {
+      $('wifi-scan-status').textContent = '扫描失败: ' + (result.error || '未知错误');
+      return;
+    }
+    const networks = result.networks || [];
+    $('wifi-scan-status').textContent = '找到 ' + networks.length + ' 个网络';
+    if (networks.length === 0) {
+      $('wifi-list').innerHTML = '<div class="hint">未找到网络</div>';
+      return;
+    }
+    const list = $('wifi-list');
+    networks.forEach(n => {
+      const item = document.createElement('div');
+      item.className = 'wifi-item';
+      const left = document.createElement('span');
+      left.className = 'wifi-ssid';
+      left.textContent = n.ssid;
+      if (n.encrypted) {
+        const lock = document.createElement('span');
+        lock.className = 'wifi-lock';
+        lock.textContent = '🔒';
+        left.appendChild(lock);
+      }
+      const right = document.createElement('span');
+      right.className = 'wifi-meta';
+      const rssi = document.createElement('span');
+      rssi.className = 'wifi-rssi ' + rssiClass(n.rssi);
+      rssi.textContent = rssiLabel(n.rssi) + ' (' + n.rssi + 'dBm)';
+      right.appendChild(rssi);
+      item.appendChild(left);
+      item.appendChild(right);
+      item.addEventListener('click', () => {
+        $('wifi-ssid').value = n.ssid;
+        $('wifi-password').value = '';
+        $('wifi-password').focus();
+        list.querySelectorAll('.wifi-item').forEach(i => i.classList.remove('selected'));
+        item.classList.add('selected');
+      });
+      list.appendChild(item);
+    });
+  } catch (e) {
+    $('wifi-scan-status').textContent = '扫描失败: ' + e.message;
+  } finally {
+    $('wifi-scan-btn').disabled = false;
+  }
+}
+
+$('wifi-scan-btn').addEventListener('click', scanWifi);
+
+$('wifi-connect-btn').addEventListener('click', async () => {
+  const ssid = $('wifi-ssid').value.trim();
+  const pwd = $('wifi-password').value;
+  if (!ssid) {
+    alert('请输入或选择 SSID');
+    return;
+  }
+  $('wifi-connect-btn').disabled = true;
+  $('wifi-connect-status').textContent = '连接中...（ESP8266 切换到 STA 模式，连接成功后请切换到新 WiFi 访问）';
+  try {
+    const resp = await fetch('/api/wifi/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ssid: ssid, password: pwd })
+    });
+    const result = await resp.json();
+    if (result.success) {
+      // 响应只是"开始连接"，真正的结果通过 SSE 或下一次状态查询得知
+      $('wifi-connect-status').textContent = '正在连接，等待结果...';
+      // 等 10 秒后查询状态（如果 ESP8266 已切换 STA，AP 会断开，请求会失败）
+      setTimeout(async () => {
+        try {
+          const sr = await fetch('/api/status');
+          const s = await sr.json();
+          if (s.wifi && s.wifi.mode === 'sta' && s.wifi.ip && s.wifi.ip !== '0.0.0.0') {
+            $('wifi-connect-status').innerHTML =
+              '<strong style="color: var(--success)">连接成功！</strong><br>' +
+              '新 IP: ' + s.wifi.ip + '<br>' +
+              '请切换到 ' + ssid + ' WiFi 后访问 http://' + s.wifi.ip + '/';
+          } else {
+            $('wifi-connect-status').textContent = '连接失败，请检查密码或信号';
+          }
+        } catch (e) {
+          // ESP8266 已切换 STA，AP 断开，无法访问
+          $('wifi-connect-status').innerHTML =
+            'ESP8266 已切换网络模式。请将电脑/手机切回 <strong>' + ssid +
+            '</strong> WiFi，然后通过串口监视器查看新 IP，或访问路由器后台查找。';
+        }
+      }, 10000);
+    } else {
+      $('wifi-connect-status').textContent = '启动失败: ' + (result.error || '未知错误');
+      $('wifi-connect-btn').disabled = false;
+    }
+  } catch (e) {
+    $('wifi-connect-status').textContent = '请求失败: ' + e.message;
+    $('wifi-connect-btn').disabled = false;
+  }
 });
 
 $('save-monitor-btn').addEventListener('click', async () => {
@@ -461,6 +699,17 @@ async function pollStatus() {
       $('ip-info').textContent = 'IP: ' + s.wifi.ip;
       $('device-ip').textContent = s.wifi.ip;
       $('rssi').textContent = s.wifi.rssi;
+    }
+    // 配网模式提示
+    if (s.config_mode !== undefined) {
+      const hint = $('wifi-mode-hint');
+      if (s.config_mode) {
+        hint.innerHTML = '<strong style="color: var(--warning)">配网模式</strong>：ESP8266 开放 AP "CCLoader-Setup"，请保持电脑/手机连此 AP 完成配网';
+      } else if (s.wifi && s.wifi.mode === 'sta') {
+        hint.innerHTML = '<strong style="color: var(--success)">STA 模式</strong>：已连接 ' + (s.wifi.ssid || '') + '，IP ' + (s.wifi.ip || '-');
+      } else {
+        hint.textContent = '';
+      }
     }
     if (s.uptime !== undefined) {
       const h = Math.floor(s.uptime / 3600);

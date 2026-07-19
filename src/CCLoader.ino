@@ -400,6 +400,9 @@ String g_upload_filename;
 fs::File g_upload_file;
 bool g_upload_error = false;
 
+// 配网模式标志：AP 模式下为 true，captive portal 启用
+bool g_in_config_mode = false;
+
 // ===== 简易 JSON 工具（仅处理顶层简单 key:value，避免 ArduinoJson 依赖）=====
 // JSON 字符串内的转义：把 " 和 \ 反转义，避免破坏 JSON
 String jsonEscape(const String& s) {
@@ -541,36 +544,71 @@ void saveConfig(const String& ssid, const String& pwd, uint32_t baud, uint8_t ve
 }
 
 // ===== WiFi =====
+// 进入配网模式：开放 AP + captive portal，用户连 CCLoader-Setup 后访问任意 URL 配网
+void enterConfigMode(const char* reason) {
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP("CCLoader-Setup");  // 开放 AP，无密码
+  g_in_config_mode = true;
+  Serial.printf("Config mode (%s): AP 'CCLoader-Setup' open, IP: ", reason);
+  Serial.println(WiFi.softAPIP());
+}
+
 void initWiFi() {
   if (g_config.wifi_ssid.length() == 0) {
-    // 无配置，开 AP 模式
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP("CCLoader-Setup", "12345678");
-    Serial.println("AP mode: CCLoader-Setup / 12345678");
-    Serial.print("AP IP: ");
-    Serial.println(WiFi.softAPIP());
-  } else {
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(g_config.wifi_ssid, g_config.wifi_password);
-    Serial.printf("Connecting to %s", g_config.wifi_ssid.c_str());
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 30) {
-      delay(500);
-      Serial.print(".");
-      attempts++;
-    }
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.println();
-      Serial.print("Connected, IP: ");
-      Serial.println(WiFi.localIP());
-    } else {
-      Serial.println("\nWiFi connect failed, switching to AP mode");
-      WiFi.mode(WIFI_AP);
-      WiFi.softAP("CCLoader-Fallback", "12345678");
-      Serial.print("AP IP: ");
-      Serial.println(WiFi.softAPIP());
-    }
+    // 无配置，进入配网模式
+    enterConfigMode("no config");
+    return;
   }
+  // 有配置，尝试连接 STA
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(g_config.wifi_ssid, g_config.wifi_password);
+  Serial.printf("Connecting to %s", g_config.wifi_ssid.c_str());
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println();
+    Serial.print("Connected, IP: ");
+    Serial.println(WiFi.localIP());
+    g_in_config_mode = false;
+  } else {
+    Serial.println("\nWiFi connect failed, switching to config mode");
+    enterConfigMode("connect failed");
+  }
+}
+
+// 切换到 STA 模式（配网成功后调用）
+bool switchToStaMode(const String& ssid, const String& pwd) {
+  Serial.printf("Trying connect to %s ...\n", ssid.c_str());
+  // 临时切换 STA 连接测试
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, pwd);
+  // 同步等待 8 秒
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 8000) {
+    delay(200);
+    server.handleClient();  // 保持 HTTP 响应能力
+    sseLoop();
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("Connected, IP: ");
+    Serial.println(WiFi.localIP());
+    g_in_config_mode = false;
+    // 保存配置
+    saveConfig(ssid, pwd, g_config.monitor_baud, g_config.verify);
+    g_config.wifi_ssid = ssid;
+    g_config.wifi_password = pwd;
+    return true;
+  }
+  // 连接失败，回到 AP 配网模式
+  Serial.println("Connect failed, back to config mode");
+  WiFi.disconnect();
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP("CCLoader-Setup");
+  return false;
 }
 
 // ===== Base64 编码（监控数据推送用）=====
@@ -840,7 +878,8 @@ void handleStatus() {
   else if (g_state == STATE_MONITORING) stateStr = "monitoring";
   json += "\"state\":\"";
   json += stateStr;
-  json += "\",\"burn\":{";
+  json += "\",\"config_mode\":" + String(g_in_config_mode ? "true" : "false");
+  json += ",\"burn\":{";
   json += "\"percent\":" + String(g_burn.percent);
   json += ",\"current_block\":" + String(g_burn.current_block);
   json += ",\"total_blocks\":" + String(g_burn.total_blocks);
@@ -855,11 +894,13 @@ void handleStatus() {
   if (WiFi.status() == WL_CONNECTED) {
     json += ",\"ip\":\"" + WiFi.localIP().toString() + "\"";
     json += ",\"rssi\":" + String(WiFi.RSSI());
+    json += ",\"mode\":\"sta\"";
   } else if (WiFi.getMode() == WIFI_AP) {
     json += ",\"ip\":\"" + WiFi.softAPIP().toString() + "\"";
     json += ",\"rssi\":0";
+    json += ",\"mode\":\"ap\"";
   } else {
-    json += ",\"ip\":\"0.0.0.0\",\"rssi\":0";
+    json += ",\"ip\":\"0.0.0.0\",\"rssi\":0,\"mode\":\"none\"";
   }
   json += "},\"uptime\":" + String(millis() / 1000);
   json += "}";
@@ -1040,6 +1081,59 @@ void handleReboot() {
   ESP.restart();
 }
 
+// WiFi 扫描：返回周围可用网络列表
+void handleWifiScan() {
+  Serial.println("WiFi scan start...");
+  int n = WiFi.scanNetworks();
+  Serial.printf("WiFi scan done, found %d networks\n", n);
+  String json = "{\"success\":true,\"networks\":[";
+  for (int i = 0; i < n; i++) {
+    if (i > 0) json += ",";
+    String ssid = WiFi.SSID(i);
+    int rssi = WiFi.RSSI(i);
+    int enc = (int)WiFi.encryptionType(i);
+    // 用 32 字节限制（WiFi SSID 最大长度）
+    json += "{\"ssid\":\"" + jsonEscape(ssid) + "\"";
+    json += ",\"rssi\":" + String(rssi);
+    json += ",\"encrypted\":" + String(enc != ENC_TYPE_NONE ? "true" : "false");
+    json += ",\"enc_type\":" + String(enc);
+    json += "}";
+  }
+  json += "]}";
+  server.send(200, "application/json", json);
+  // 释放扫描结果内存
+  WiFi.scanDelete();
+}
+
+// WiFi 连接：尝试连接指定 SSID/密码，成功后保存配置并切换到 STA 模式
+void handleWifiConnect() {
+  String body = server.arg("plain");
+  String ssid = jsonGetString(body, "ssid");
+  String pwd = jsonGetString(body, "password");
+  if (ssid.length() == 0) {
+    server.send(400, "application/json", "{\"error\":\"ssid required\"}");
+    return;
+  }
+  if (ssid.length() > 32) {
+    server.send(400, "application/json", "{\"error\":\"ssid too long\"}");
+    return;
+  }
+  // 立即响应（连接过程在下面同步执行，前端通过 IP 切换感知）
+  server.send(200, "application/json", "{\"success\":true,\"message\":\"connecting\"}");
+
+  // 切换到 STA 模式并连接
+  bool ok = switchToStaMode(ssid, pwd);
+  if (ok) {
+    // 推送 SSE 通知（如果还有客户端连着 AP 的话，会断开）
+    String json = "{\"type\":\"wifi_connected\",\"ssid\":\"" + jsonEscape(ssid) +
+                  "\",\"ip\":\"" + WiFi.localIP().toString() + "\"}";
+    sseSend(json);
+  } else {
+    String json = "{\"type\":\"wifi_connect_failed\",\"ssid\":\"" + jsonEscape(ssid) + "\"}";
+    sseSend(json);
+  }
+}
+
 void initHttpRoutes() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/style.css", HTTP_GET, handleCss);
@@ -1054,10 +1148,28 @@ void initHttpRoutes() {
   server.on("/api/files", HTTP_GET, handleFiles);
   // /api/files/{name} - 用正则通配符
   server.on(UriRegex("^/api/files/([^/]+)$"), HTTP_DELETE, handleDeleteFile);
+  server.on("/api/wifi/scan", HTTP_GET, handleWifiScan);
+  server.on("/api/wifi/connect", HTTP_POST, handleWifiConnect);
   server.on("/api/reboot", HTTP_POST, handleReboot);
   server.onNotFound([](){
-    server.send(404, "application/json", "{\"error\":\"not found\"}");
+    // 配网模式下：所有未识别 URL 返回主页（captive portal）
+    // 手机/电脑连 AP 后访问任意 URL 会自动弹出配网页
+    if (g_in_config_mode) {
+      // 对 HTML 请求返回主页，对其他请求返回 302 重定向
+      String accept = server.header("Accept");
+      if (accept.indexOf("text/html") >= 0 || accept.indexOf("text/css") >= 0 ||
+          accept.length() == 0) {
+        handleRoot();
+      } else {
+        // API 请求或资源请求在配网模式下返回 404
+        server.send(404, "application/json", "{\"error\":\"not found, in config mode\"}");
+      }
+    } else {
+      server.send(404, "application/json", "{\"error\":\"not found\"}");
+    }
   });
+  // 收集客户端 header 用于 captive portal 判断
+  server.collectHeaders("Accept", "User-Agent");
 }
 
 // ===== setup / loop =====
