@@ -403,6 +403,19 @@ bool g_upload_error = false;
 // 配网模式标志：AP 模式下为 true，captive portal 启用
 bool g_in_config_mode = false;
 
+// 异步烧录：POST /api/burn?async=1 立即返回，烧录在 loop() 中执行
+bool g_burn_pending = false;
+String g_burn_pending_filename;
+bool g_burn_pending_verify = false;
+uint32_t g_burn_task_id = 0;  // 单调递增的 task_id
+
+// 监控日志环形缓冲：支持 Agent 轮询 GET /api/monitor/buffer?since=N
+// 缓存最近 8KB 日志，Agent 可断点续传获取
+#define MONITOR_RING_SIZE 8192
+uint8_t g_monitor_ring[MONITOR_RING_SIZE];
+uint32_t g_monitor_ring_head = 0;   // 下一个写入位置 (mod SIZE)
+uint32_t g_monitor_ring_total = 0;  // 累计写入字节数（单调递增，不取模）
+
 // ===== 简易 JSON 工具（仅处理顶层简单 key:value，避免 ArduinoJson 依赖）=====
 // JSON 字符串内的转义：把 " 和 \ 反转义，避免破坏 JSON
 String jsonEscape(const String& s) {
@@ -695,6 +708,13 @@ void pushBurnProgress() {
 
 void pushMonitorData() {
   if (g_monitor_len == 0) return;
+  // 写入环形缓冲（供 Agent 轮询 /api/monitor/buffer 获取）
+  for (uint16_t i = 0; i < g_monitor_len; i++) {
+    g_monitor_ring[g_monitor_ring_head] = g_monitor_buf[i];
+    g_monitor_ring_head = (g_monitor_ring_head + 1) % MONITOR_RING_SIZE;
+    g_monitor_ring_total++;
+  }
+  // SSE 推送给在线浏览器
   String b64 = base64Encode(g_monitor_buf, g_monitor_len);
   String json = "{\"type\":\"monitor_data\",\"data\":\"" + b64 + "\"}";
   sseSend(json);
@@ -827,6 +847,8 @@ void enterMonitorMode(uint32_t baud, bool autoReset) {
   g_monitor_baud = baud;
   g_monitor_len = 0;
   g_monitor_bytes_total = 0;
+  g_monitor_ring_head = 0;
+  g_monitor_ring_total = 0;
   g_monitor_last_push = millis();
   g_state = STATE_MONITORING;
 
@@ -921,6 +943,8 @@ void handleStatus() {
     json += ",\"ip\":\"0.0.0.0\",\"rssi\":0,\"mode\":\"none\"";
   }
   json += "},\"uptime\":" + String(millis() / 1000);
+  json += ",\"task_id\":" + String(g_burn_task_id);
+  json += ",\"burn_pending\":" + String(g_burn_pending ? "true" : "false");
   json += "}";
   server.send(200, "application/json", json);
 }
@@ -999,7 +1023,7 @@ void handleUpload() {
 }
 
 void handleBurn() {
-  if (g_state != STATE_IDLE) {
+  if (g_state != STATE_IDLE || g_burn_pending) {
     server.send(409, "application/json", "{\"error\":\"busy\"}");
     return;
   }
@@ -1017,8 +1041,24 @@ void handleBurn() {
   uint32_t totalBlocks = (f.size() + 511) / 512;
   f.close();
 
-  // 立即响应 HTTP，烧录在同步阻塞中执行（SSE 推送进度）
-  String resp = "{\"success\":true,\"total_blocks\":" + String(totalBlocks) + "}";
+  // async 模式：立即返回 task_id，烧录在 loop() 中执行
+  // Agent 可轮询 /api/status 跟踪进度，避免长连接超时
+  bool async = server.hasArg("async");
+  if (async) {
+    g_burn_task_id++;
+    g_burn_pending = true;
+    g_burn_pending_filename = filename;
+    g_burn_pending_verify = verify;
+    String resp = "{\"success\":true,\"async\":true,\"task_id\":" + String(g_burn_task_id) +
+                  ",\"total_blocks\":" + String(totalBlocks) + "}";
+    server.send(202, "application/json", resp);
+    Serial.printf("Burn queued (async): task=%u file=%s verify=%d blocks=%u\n",
+                  g_burn_task_id, filename.c_str(), verify, totalBlocks);
+    return;
+  }
+
+  // 同步模式：立即响应 HTTP，烧录在阻塞中执行（SSE 推送进度）
+  String resp = "{\"success\":true,\"async\":false,\"total_blocks\":" + String(totalBlocks) + "}";
   server.send(200, "application/json", resp);
 
   g_state = STATE_BURNING;
@@ -1075,6 +1115,66 @@ void handleResetCC2530() {
     String json = "{\"type\":\"monitor_reset\"}";
     sseSend(json);
   }
+}
+
+// Agent 友好：获取监控日志环形缓冲（支持断点续传）
+// GET /api/monitor/buffer          - 返回全部缓冲
+// GET /api/monitor/buffer?since=N  - 返回从累计字节 N 之后的数据
+// 响应：{"success":true,"total":12345,"offset":0,"data":"<base64>","truncated":false}
+void handleMonitorBuffer() {
+  uint32_t since = 0;
+  if (server.hasArg("since")) {
+    since = (uint32_t)strtoul(server.arg("since").c_str(), NULL, 10);
+  }
+
+  uint32_t total = g_monitor_ring_total;
+  uint32_t buffered = (total < MONITOR_RING_SIZE) ? total : MONITOR_RING_SIZE;
+  uint32_t oldest = total - buffered;  // 缓冲中最早字节对应的累计偏移
+
+  String json = "{\"success\":true";
+  json += ",\"total\":" + String(total);
+  json += ",\"buffered\":" + String(buffered);
+
+  if (since >= total) {
+    // 没有新数据
+    json += ",\"offset\":" + String(total);
+    json += ",\"data\":\"\"";
+    json += ",\"truncated\":false";
+  } else if (since < oldest) {
+    // 请求的偏移已超出缓冲范围（数据被覆盖）
+    // 返回全部缓冲，并标记 truncated
+    uint32_t start = (total < MONITOR_RING_SIZE) ? 0 : (g_monitor_ring_head);
+    String b64;
+    if (total < MONITOR_RING_SIZE) {
+      b64 = base64Encode(g_monitor_ring, total);
+    } else {
+      // 从 head 开始读 MONITOR_RING_SIZE 字节
+      b64 = base64Encode(g_monitor_ring + start, MONITOR_RING_SIZE - start);
+      b64 += base64Encode(g_monitor_ring, start);
+    }
+    json += ",\"offset\":" + String(oldest);
+    json += ",\"data\":\"" + b64 + "\"";
+    json += ",\"truncated\":true";
+    json += ",\"missed\":" + String(oldest - since);
+  } else {
+    // 正常返回 since 到 total 的数据
+    uint32_t bytesToRead = total - since;
+    uint32_t startInRing = since % MONITOR_RING_SIZE;
+    // 拼接（可能跨环形边界）
+    String b64;
+    if (startInRing + bytesToRead <= MONITOR_RING_SIZE) {
+      b64 = base64Encode(g_monitor_ring + startInRing, bytesToRead);
+    } else {
+      uint32_t firstPart = MONITOR_RING_SIZE - startInRing;
+      b64 = base64Encode(g_monitor_ring + startInRing, firstPart);
+      b64 += base64Encode(g_monitor_ring, bytesToRead - firstPart);
+    }
+    json += ",\"offset\":" + String(since);
+    json += ",\"data\":\"" + b64 + "\"";
+    json += ",\"truncated\":false";
+  }
+  json += "}";
+  server.send(200, "application/json", json);
 }
 
 void handleFiles() {
@@ -1189,6 +1289,7 @@ void initHttpRoutes() {
   server.on("/api/monitor", HTTP_POST, handleMonitor);
   server.on("/api/stop", HTTP_POST, handleStop);
   server.on("/api/reset", HTTP_POST, handleResetCC2530);
+  server.on("/api/monitor/buffer", HTTP_GET, handleMonitorBuffer);
   server.on("/api/files", HTTP_GET, handleFiles);
   // /api/files/{name} - 用正则通配符
   server.on(UriRegex("^/api/files/([^/]+)$"), HTTP_DELETE, handleDeleteFile);
@@ -1251,6 +1352,19 @@ void setup() {
 }
 
 void loop() {
+  // 异步烧录：检测到 pending 标志后在 loop 中执行
+  // burnFromLittleFS 内部会周期性调用 server.handleClient() 保持 HTTP 可响应
+  if (g_burn_pending && g_state == STATE_IDLE) {
+    g_burn_pending = false;
+    g_state = STATE_BURNING;
+    digitalWrite(LED, HIGH);
+    Serial.printf("Starting async burn: %s\n", g_burn_pending_filename.c_str());
+    burnFromLittleFS(g_burn_pending_filename, g_burn_pending_verify);
+    digitalWrite(LED, LOW);
+    g_state = STATE_IDLE;
+    g_burn_pending_filename = "";
+  }
+
   server.handleClient();
   sseLoop();
 
@@ -1259,7 +1373,7 @@ void loop() {
       // 空闲，WiFi+HTTP+SSE 在线，等待浏览器操作
       break;
     case STATE_BURNING:
-      // 烧录在 HTTP handler 中同步执行，这里不会进入
+      // 烧录在 HTTP handler 或 loop 异步分支中同步执行，这里不会进入
       break;
     case STATE_MONITORING:
       handleMonitoring();

@@ -12,8 +12,9 @@
 4. [首次部署](#4-首次部署)
 5. [浏览器操作流程](#5-浏览器操作流程)
 6. [工作原理](#6-工作原理)
-7. [故障排查](#7-故障排查)
-8. [常见问题](#8-常见问题)
+7. [Agent API 自动化调用](#7-agent-api-自动化调用)
+8. [故障排查](#8-故障排查)
+9. [常见问题](#9-常见问题)
 
 ---
 
@@ -312,9 +313,190 @@ Connected, IP: 192.168.1.100
 
 ---
 
-## 7. 故障排查
+## 7. Agent API 自动化调用
 
-### 7.1 编译相关
+固件提供完整 REST API，外部 Agent（脚本/AI/自动化系统）可直接 HTTP 调用，无需浏览器。**无鉴权**，局域网内任意设备可调用。
+
+### 7.1 API 端点总览
+
+| 方法 | 路径 | 功能 | 返回码 |
+|---|---|---|---|
+| GET  | `/api/status` | 当前状态（state/burn/monitor/wifi/task_id） | 200 |
+| GET  | `/api/config` | 读取配置 | 200 |
+| POST | `/api/config` | 更新配置（body: JSON） | 200 |
+| POST | `/api/upload` | 上传 BIN（multipart/form-data, 字段 `file`） | 200 |
+| GET  | `/api/files` | 列出已上传 BIN | 200 |
+| DELETE | `/api/files/{name}` | 删除 BIN | 200/404 |
+| POST | `/api/burn` | 同步烧录（阻塞至完成） | 200 |
+| POST | `/api/burn?async=1` | **异步烧录**（立即返回 task_id） | 202 |
+| POST | `/api/monitor` | 开始监控（body: `{baud,auto_reset}`） | 200 |
+| POST | `/api/stop` | 停止监控 | 200 |
+| POST | `/api/reset` | 复位 CC2530（GPIO5/RESETn） | 200 |
+| GET  | `/api/monitor/buffer` | 获取监控日志（全部缓冲） | 200 |
+| GET  | `/api/monitor/buffer?since=N` | **断点续传**获取日志（从字节 N 之后） | 200 |
+| GET  | `/api/wifi/scan` | 扫描 WiFi（耗时 3-5 秒） | 200 |
+| POST | `/api/wifi/connect` | 连接 WiFi（body: `{ssid,password}`） | 200 |
+| POST | `/api/reboot` | 重启 ESP8266 | 200 |
+
+> 实时事件通过 SSE 推送（端口 81，`EventSource` 或 `curl -N`），详见 6.3 节。
+
+### 7.2 状态机与互斥
+
+| 当前状态 | 允许的 API | 拒绝的 API |
+|---|---|---|
+| `idle` | 所有 | - |
+| `burning` 或 `burn_pending=true` | `/api/status` | `/api/burn`、`/api/monitor`、`/api/reset` 返回 `409 busy` |
+| `monitoring` | `/api/status`、`/api/stop`、`/api/reset`、`/api/monitor/buffer` | `/api/burn`、`/api/monitor` 返回 `409 busy` |
+
+### 7.3 异步烧录流程（Agent 推荐）
+
+异步模式避免 HTTP 长连接超时，Agent 通过轮询 status 跟踪进度：
+
+```bash
+# 1. 上传 BIN
+curl -s -F "file=@CC2530.bin" http://192.168.1.100/api/upload
+# 返回: {"success":true,"filename":"CC2530.bin","size":262144}
+
+# 2. 发起异步烧录（立即返回）
+curl -s -X POST "http://192.168.1.100/api/burn?async=1" \
+     -H "Content-Type: application/json" \
+     -d '{"filename":"CC2530.bin","verify":true}'
+# 返回: {"success":true,"async":true,"task_id":1,"total_blocks":512}
+
+# 3. 轮询状态（每 2 秒）
+curl -s http://192.168.1.100/api/status
+# 返回: {"state":"burning","task_id":1,"burn_pending":false,
+#        "burn":{"percent":45,"current_block":230,"total_blocks":512,
+#                "done":false,"error":""}, ...}
+
+# 4. 烧录完成（done=true）
+# {"state":"idle","task_id":1,"burn":{"percent":100,"done":true,"error":""}, ...}
+```
+
+### 7.4 监控日志获取（两种方式）
+
+#### 方式 A：SSE 长连接（实时，端口 81）
+
+```python
+import requests, base64, json
+
+with requests.get('http://192.168.1.100:81/', stream=True, timeout=None) as r:
+    for line in r.iter_lines():
+        if line.startswith(b'data: '):
+            msg = json.loads(line[6:])
+            if msg['type'] == 'monitor_data':
+                log = base64.b64decode(msg['data']).decode('utf-8', errors='replace')
+                print(log, end='')
+            elif msg['type'] == 'monitor_start':
+                print(f"[监控开始 baud={msg['baud']}]")
+            elif msg['type'] == 'monitor_reset':
+                print("[CC2530 已复位]")
+            elif msg['type'] == 'monitor_stop':
+                print("[监控停止]")
+                break
+```
+
+#### 方式 B：轮询环形缓冲（断点续传，端口 80）
+
+```python
+import requests, base64, time
+
+offset = 0
+while True:
+    r = requests.get(f'http://192.168.1.100/api/monitor/buffer?since={offset}')
+    data = r.json()
+    if data['data']:
+        log = base64.b64decode(data['data']).decode('utf-8', errors='replace')
+        print(log, end='')
+        offset = data['total']  # 更新偏移到最新
+    if data.get('truncated'):
+        print(f"\n[警告：缓冲溢出，丢失 {data['missed']} 字节]")
+    time.sleep(0.5)
+```
+
+**缓冲接口响应字段**：
+
+| 字段 | 说明 |
+|---|---|
+| `total` | 累计接收字节数（单调递增） |
+| `buffered` | 当前缓冲中字节数（最多 8192） |
+| `offset` | 本次返回数据的起始累计偏移 |
+| `data` | Base64 编码的日志数据 |
+| `truncated` | true 表示请求的 since 已超出缓冲范围，部分数据被覆盖 |
+| `missed` | truncated=true 时，丢失的字节数 |
+
+### 7.5 完整 Agent 自动化示例（Python）
+
+```python
+import requests, base64, json, time
+
+IP = "192.168.1.100"
+BIN = "CC2530.bin"
+
+# 1. 检查设备就绪
+s = requests.get(f"http://{IP}/api/status").json()
+assert s["state"] == "idle", f"设备忙: {s['state']}"
+
+# 2. 上传 BIN
+with open(BIN, "rb") as f:
+    r = requests.post(f"http://{IP}/api/upload", files={"file": f})
+print("上传:", r.json())
+
+# 3. 异步烧录
+r = requests.post(f"http://{IP}/api/burn?async=1",
+                  json={"filename": BIN, "verify": True})
+task = r.json()
+print(f"烧录任务 task_id={task['task_id']}, blocks={task['total_blocks']}")
+
+# 4. 轮询进度
+while True:
+    s = requests.get(f"http://{IP}/api/status").json()
+    b = s["burn"]
+    print(f"\r烧录进度: {b['percent']}% ({b['current_block']}/{b['total_blocks']})", end="")
+    if b["done"]:
+        if b["error"]:
+            print(f"\n烧录失败: {b['error']}")
+            exit(1)
+        print("\n烧录成功")
+        break
+    time.sleep(2)
+
+# 5. 开始监控（自动复位 CC2530，捕获启动日志）
+requests.post(f"http://{IP}/api/monitor",
+              json={"baud": 115200, "auto_reset": True})
+
+# 6. 轮询获取日志（5 秒后停止）
+offset = 0
+deadline = time.time() + 5
+while time.time() < deadline:
+    r = requests.get(f"http://{IP}/api/monitor/buffer?since={offset}")
+    d = r.json()
+    if d["data"]:
+        print(base64.b64decode(d["data"]).decode('utf-8', errors='replace'), end='')
+        offset = d["total"]
+    time.sleep(0.3)
+
+# 7. 停止监控
+requests.post(f"http://{IP}/api/stop")
+print("\n完成")
+```
+
+### 7.6 关键限制
+
+| 限制 | 值 | 说明 |
+|---|---|---|
+| 同步烧录 HTTP 超时 | 建议 600 秒 | 同步模式阻塞至烧录完成 |
+| 异步烧录返回码 | 202 Accepted | 立即返回 task_id，轮询 status 跟踪 |
+| 监控环形缓冲 | 8192 字节 | 超出后旧数据被覆盖，truncated=true 提示 |
+| SSE 最大客户端 | 4 | 第 5 个连接被拒绝 |
+| BIN 文件大小 | ≤ 256KB | LittleFS 1MB 分区可用约 700KB |
+| WiFi 仅 2.4GHz | - | ESP8266 不支持 5GHz |
+
+---
+
+## 8. 故障排查
+
+### 8.1 编译相关
 
 | 问题 | 原因 | 解决 |
 |---|---|---|
@@ -324,7 +506,7 @@ Connected, IP: 192.168.1.100
 | `platforms.lock` 沙箱阻止 | PlatformIO 试图写用户目录 | 用管理员权限运行，或检查杀软白名单 |
 | `Failed to connect to ESP8266: Timed out waiting for packet header` | GPIO3 (RX) 接到 CC2530 P0_3，CC2530 输出干扰 ESP8266 下载 | **拔掉 GPIO3↔P0_3 的连接线后重试**；或按住 FLASH + RESET 进入强制下载模式 |
 
-### 7.2 运行时
+### 8.2 运行时
 
 | 现象 | 排查 |
 |---|---|
@@ -343,7 +525,7 @@ Connected, IP: 192.168.1.100
 | 监控卡顿、丢数据 | WiFi 信号差 | RSSI 应 > -75dBm；或缩短距离 |
 | 上传 BIN 失败 | LittleFS 空间不足 | 删除旧 BIN；或换 4MB Flash 的 NodeMCU |
 
-### 7.3 串口调试
+### 8.3 串口调试
 
 用 PlatformIO 串口监视器查看 ESP8266 日志：
 
@@ -355,7 +537,7 @@ python -m platformio device monitor -p COM5 -b 115200
 
 ---
 
-## 8. 常见问题
+## 9. 常见问题
 
 ### Q1: 可以同时连接多个浏览器吗？
 
