@@ -6,7 +6,7 @@
 
 namespace WebAssets {
 
-// index.html (14512 bytes, text/html)
+// index.html (14840 bytes, text/html)
 const char index_html[] PROGMEM = R"=====(
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -154,6 +154,8 @@ const char index_html[] PROGMEM = R"=====(
         <div>IP 地址: <span id="device-ip">-</span></div>
         <button id="reboot-btn" class="btn danger">重启 ESP8266</button>
       </div>
+    </section>
+
     <!-- 帮助页 -->
     <section id="tab-help" class="tab-content">
       <h2>帮助</h2>
@@ -320,9 +322,9 @@ curl -F "image=@.pio/build/nodemcuv2/firmware.bin" http://10.0.0.147/update</pre
 </html>
 
 )=====";
-const size_t index_html_len = 14512;
+const size_t index_html_len = 14840;
 
-// style.css (7872 bytes, text/css)
+// style.css (8214 bytes, text/css)
 const char style_css[] PROGMEM = R"=====(
 /* CCLoader WebUI - 暗色主题响应式样式 */
 
@@ -668,9 +670,9 @@ select:focus {
 }
 
 )=====";
-const size_t style_css_len = 7872;
+const size_t style_css_len = 8214;
 
-// app.js (26258 bytes, application/javascript)
+// app.js (27035 bytes, application/javascript)
 const char app_js[] PROGMEM = R"=====(
 // CCLoader WebUI 前端逻辑
 // 使用 SSE (EventSource) 接收实时事件，无外部库依赖
@@ -1451,9 +1453,9 @@ function init() {
 init();
 
 )=====";
-const size_t app_js_len = 26258;
+const size_t app_js_len = 27035;
 
-// config.json (90 bytes, application/json)
+// config.json (96 bytes, application/json)
 const char config_json[] PROGMEM = R"=====(
 {
   "wifi_ssid": "",
@@ -1463,6 +1465,6 @@ const char config_json[] PROGMEM = R"=====(
 }
 
 )=====";
-const size_t config_json_len = 90;
+const size_t config_json_len = 96;
 
 }  // namespace WebAssets
