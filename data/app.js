@@ -139,20 +139,21 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 });
 
 // ===== hex2bin：Intel HEX 转 BIN（参考 diyruz_rt/Tools/hex2bin.py）=====
-// 返回 { bin: Uint8Array, log: [strings], name: string }
-async function hex2bin(file) {
-  const log = [];
+// 拆分为 parseHexToMap + mapToBin 两个函数，便于 OTA 分体固件合并复用
+
+// 解析 HEX 文件到共享 dataMap
+// - dataMap: Map<addr, Uint8Array>，可跨多个 hex 累积
+// - addrRange: { min, max, countType0, countType2, countType4 }，函数内更新
+// - log: 字符串数组，函数内追加
+// 抛出异常时 dataMap/addrRange 可能已部分更新（调用方应丢弃）
+async function parseHexToMap(file, dataMap, addrRange, log) {
   log.push('HEX 文件: ' + file.name);
 
   const text = await file.text();
   const lines = text.split(/\r?\n/);
   log.push('总行数: ' + lines.length);
 
-  // 数据映射：addr -> Uint8Array
-  const dataMap = new Map();
   let baseAddr = 0x00000;
-  let minAddr = null, maxAddr = null;
-  let countType0 = 0, countType4 = 0, countType2 = 0;
 
   for (let lineNo = 0; lineNo < lines.length; lineNo++) {
     const line = lines[lineNo].trim();
@@ -162,7 +163,7 @@ async function hex2bin(file) {
     const raw = [];
     for (let i = 1; i + 1 < line.length; i += 2) {
       const b = parseInt(line.substr(i, 2), 16);
-      if (isNaN(b)) throw new Error('line ' + (lineNo + 1) + ': 非法 hex 字符');
+      if (isNaN(b)) throw new Error(file.name + ' line ' + (lineNo + 1) + ': 非法 hex 字符');
       raw.push(b);
     }
     if (raw.length < 5) continue;
@@ -177,7 +178,7 @@ async function hex2bin(file) {
     for (let i = 0; i < raw.length - 1; i++) sum = (sum + raw[i]) & 0xFF;
     const csum = raw[raw.length - 1];
     if (((sum + csum) & 0xFF) !== 0) {
-      throw new Error('line ' + (lineNo + 1) + ': 校验和错误');
+      throw new Error(file.name + ' line ' + (lineNo + 1) + ': 校验和错误');
     }
 
     if (bType === 0x01) {
@@ -186,50 +187,64 @@ async function hex2bin(file) {
     } else if (bType === 0x02) {
       // 扩展段地址
       baseAddr = ((data[0] << 8) | data[1]) << 4;
-      countType2++;
+      addrRange.countType2++;
     } else if (bType === 0x04) {
       // 扩展线性地址
       baseAddr = ((data[0] << 8) | data[1]) << 16;
-      countType4++;
+      addrRange.countType4++;
     } else if (bType === 0x05) {
       // 起始线性地址，忽略
     } else if (bType === 0x00) {
       // 数据记录
       const physAddr = baseAddr + bAddr;
       dataMap.set(physAddr, new Uint8Array(data));
-      if (minAddr === null || physAddr < minAddr) minAddr = physAddr;
+      if (addrRange.min === null || physAddr < addrRange.min) addrRange.min = physAddr;
       const endAddr = physAddr + data.length - 1;
-      if (maxAddr === null || endAddr > maxAddr) maxAddr = endAddr;
-      countType0++;
+      if (addrRange.max === null || endAddr > addrRange.max) addrRange.max = endAddr;
+      addrRange.countType0++;
     } else {
-      log.push('警告 line ' + (lineNo + 1) + ': 未知记录类型 0x' + bType.toString(16));
+      log.push('警告 ' + file.name + ' line ' + (lineNo + 1) + ': 未知记录类型 0x' + bType.toString(16));
     }
   }
+}
 
-  if (minAddr === null) throw new Error('HEX 文件无数据记录');
-
-  log.push('数据记录 type00: ' + countType0);
-  log.push('扩展线性地址 type04: ' + countType4);
-  log.push('扩展段地址 type02: ' + countType2);
-  log.push('地址范围: 0x' + minAddr.toString(16) + ' - 0x' + maxAddr.toString(16));
-  const dataSpan = maxAddr - minAddr + 1;
-  log.push('数据跨度: ' + dataSpan + ' 字节 (' + (dataSpan / 1024).toFixed(1) + ' KB)');
-
-  // CC2530 要求 256KB 完整 BIN
+// dataMap 转 256KB BIN（CC2530 要求完整 256KB）
+// 返回 { bin, binSize, padBytes }
+function mapToBin(dataMap, maxAddr) {
   const padTo = 0x40000;  // 256KB
   const binSize = Math.max(maxAddr + 1, padTo);
   const padBytes = binSize - (maxAddr + 1);
-  log.push('BIN 大小: ' + binSize + ' 字节 (' + (binSize / 1024).toFixed(1) + ' KB)');
-  log.push('尾部填充 0xFF: ' + padBytes + ' 字节 (' + (padBytes / 1024).toFixed(1) + ' KB)');
 
-  // 构造 BIN
   const bin = new Uint8Array(binSize);
   bin.fill(0xFF);
   for (const [addr, data] of dataMap) {
     bin.set(data, addr);
   }
+  return { bin: bin, binSize: binSize, padBytes: padBytes };
+}
 
-  // 输出文件名
+// 单文件 hex2bin（原有接口，行为不变）
+// 返回 { bin: Uint8Array, log: [strings], name: string }
+async function hex2bin(file) {
+  const log = [];
+  const dataMap = new Map();
+  const addrRange = { min: null, max: null, countType0: 0, countType2: 0, countType4: 0 };
+
+  await parseHexToMap(file, dataMap, addrRange, log);
+
+  if (addrRange.min === null) throw new Error('HEX 文件无数据记录');
+
+  log.push('数据记录 type00: ' + addrRange.countType0);
+  log.push('扩展线性地址 type04: ' + addrRange.countType4);
+  log.push('扩展段地址 type02: ' + addrRange.countType2);
+  log.push('地址范围: 0x' + addrRange.min.toString(16) + ' - 0x' + addrRange.max.toString(16));
+  const dataSpan = addrRange.max - addrRange.min + 1;
+  log.push('数据跨度: ' + dataSpan + ' 字节 (' + (dataSpan / 1024).toFixed(1) + ' KB)');
+
+  const { bin, binSize, padBytes } = mapToBin(dataMap, addrRange.max);
+  log.push('BIN 大小: ' + binSize + ' 字节 (' + (binSize / 1024).toFixed(1) + ' KB)');
+  log.push('尾部填充 0xFF: ' + padBytes + ' 字节 (' + (padBytes / 1024).toFixed(1) + ' KB)');
+
   const baseName = file.name.replace(/\.hex$/i, '');
   return { bin: bin, log: log, name: baseName + '.bin' };
 }
