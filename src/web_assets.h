@@ -6,7 +6,7 @@
 
 namespace WebAssets {
 
-// index.html (14840 bytes, text/html)
+// index.html (16140 bytes, text/html)
 const char index_html[] PROGMEM = R"=====(
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -40,10 +40,34 @@ const char index_html[] PROGMEM = R"=====(
 
       <div class="card">
         <h3>上传固件</h3>
-        <input type="file" id="file-input" accept=".bin,.hex">
-        <button id="upload-btn" class="btn">上传</button>
-        <div id="upload-progress" class="progress-text"></div>
-        <div class="hint">支持 .bin（直接烧录）和 .hex（自动转换为 BIN，填充到 256KB）</div>
+        <div class="burn-mode-switch">
+          <label><input type="radio" name="burn-mode" value="single" checked> 单文件</label>
+          <label><input type="radio" name="burn-mode" value="ota"> OTA 分体固件</label>
+        </div>
+
+        <div id="single-mode" class="burn-mode-panel">
+          <input type="file" id="file-input" accept=".bin,.hex">
+          <button id="upload-btn" class="btn">上传</button>
+          <div id="upload-progress" class="progress-text"></div>
+          <div class="hint">支持 .bin（直接烧录）和 .hex（自动转换为 BIN，填充到 256KB）</div>
+        </div>
+
+        <div id="ota-mode" class="burn-mode-panel" style="display:none;">
+          <div class="ota-file-slot">
+            <label>① OTA Bootloader (.hex)</label>
+            <input type="file" id="ota-boot-file" accept=".hex">
+            <span id="ota-boot-info" class="file-meta"></span>
+          </div>
+          <div class="ota-file-slot">
+            <label>② 应用固件 (.hex)</label>
+            <input type="file" id="ota-app-file" accept=".hex">
+            <span id="ota-app-info" class="file-meta"></span>
+          </div>
+          <div id="ota-merge-preview" class="ota-preview"></div>
+          <button id="ota-merge-upload-btn" class="btn primary" disabled>合并并上传</button>
+          <div id="ota-merge-progress" class="progress-text"></div>
+          <div class="hint">CC2530 OTA 固件分 Bootloader (0x0000~0x07FF) + 应用 (0x0800 起)，前端合并为一个 256KB BIN 后复用现有烧录链路</div>
+        </div>
       </div>
 
       <div class="card">
@@ -322,9 +346,9 @@ curl -F "image=@.pio/build/nodemcuv2/firmware.bin" http://10.0.0.147/update</pre
 </html>
 
 )=====";
-const size_t index_html_len = 14840;
+const size_t index_html_len = 16140;
 
-// style.css (8214 bytes, text/css)
+// style.css (9164 bytes, text/css)
 const char style_css[] PROGMEM = R"=====(
 /* CCLoader WebUI - 暗色主题响应式样式 */
 
@@ -669,10 +693,54 @@ select:focus {
   line-height: 1.6;
 }
 
-)=====";
-const size_t style_css_len = 8214;
+/* 烧录模式切换 */
+.burn-mode-switch {
+  display: flex;
+  gap: 16px;
+  padding: 6px 0;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.burn-mode-switch label {
+  cursor: pointer;
+  font-weight: 500;
+}
+.burn-mode-panel {
+  padding-top: 4px;
+}
+.ota-file-slot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.ota-file-slot label {
+  min-width: 180px;
+  font-weight: 500;
+  margin-right: 0;
+}
+.ota-preview {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px;
+  margin: 8px 0;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: pre-line;
+  line-height: 1.6;
+  min-height: 20px;
+}
+.ota-preview.error { color: var(--danger); }
+.ota-preview .addr-ok { color: var(--success); }
+.ota-preview .addr-warn { color: var(--warning); }
 
-// app.js (27947 bytes, application/javascript)
+)=====";
+const size_t style_css_len = 9164;
+
+// app.js (36728 bytes, application/javascript)
 const char app_js[] PROGMEM = R"=====(
 // CCLoader WebUI 前端逻辑
 // 使用 SSE (EventSource) 接收实时事件，无外部库依赖
@@ -924,6 +992,214 @@ async function hex2bin(file) {
   const baseName = file.name.replace(/\.hex$/i, '');
   return { bin: bin, log: log, name: baseName + '.bin' };
 }
+
+// ===== OTA 分体固件合并 =====
+// 解析 Boot.hex + App.hex 到同一个 dataMap，生成合并 BIN
+// 地址冲突检测：Bootloader 应在 0x0000~0x07FF，应用在 0x0800+，重叠则报错
+// 返回 { bin, log, name: 'OTA_merged.bin', bootRange, appRange }
+async function mergeOtaHex(bootFile, appFile) {
+  const log = [];
+  const dataMap = new Map();
+  const addrRange = { min: null, max: null, countType0: 0, countType2: 0, countType4: 0 };
+
+  // 解析 Bootloader（先单独解析一次，记录地址范围）
+  log.push('=== OTA Bootloader ===');
+  const bootRange = { min: null, max: null };
+  {
+    const tmpMap = new Map();
+    const tmpRange = { min: null, max: null, countType0: 0, countType2: 0, countType4: 0 };
+    await parseHexToMap(bootFile, tmpMap, tmpRange, log);
+    if (tmpRange.min === null) throw new Error('Bootloader HEX 无数据记录');
+    bootRange.min = tmpRange.min;
+    bootRange.max = tmpRange.max;
+    // 合并到主 dataMap
+    for (const [a, d] of tmpMap) dataMap.set(a, d);
+    if (addrRange.min === null || tmpRange.min < addrRange.min) addrRange.min = tmpRange.min;
+    if (addrRange.max === null || tmpRange.max > addrRange.max) addrRange.max = tmpRange.max;
+    addrRange.countType0 += tmpRange.countType0;
+    addrRange.countType2 += tmpRange.countType2;
+    addrRange.countType4 += tmpRange.countType4;
+  }
+
+  // 解析应用固件
+  log.push('=== 应用固件 ===');
+  const appRange = { min: null, max: null };
+  {
+    const tmpMap = new Map();
+    const tmpRange = { min: null, max: null, countType0: 0, countType2: 0, countType4: 0 };
+    await parseHexToMap(appFile, tmpMap, tmpRange, log);
+    if (tmpRange.min === null) throw new Error('应用固件 HEX 无数据记录');
+    appRange.min = tmpRange.min;
+    appRange.max = tmpRange.max;
+    // 地址冲突检测：Bootloader 和应用不应重叠
+    // Bootloader 在 0x0000~0x07FF，应用在 0x0800+，正常不重叠
+    if (tmpRange.min <= bootRange.max) {
+      throw new Error('地址冲突：应用固件起始 0x' + tmpRange.min.toString(16) +
+                      ' <= Bootloader 结束 0x' + bootRange.max.toString(16) +
+                      '，期望 Bootloader 在 0x0000~0x07FF，应用在 0x0800+');
+    }
+    // 合并到主 dataMap（地址不重叠，直接 set）
+    for (const [a, d] of tmpMap) dataMap.set(a, d);
+    if (tmpRange.max > addrRange.max) addrRange.max = tmpRange.max;
+    addrRange.countType0 += tmpRange.countType0;
+    addrRange.countType2 += tmpRange.countType2;
+    addrRange.countType4 += tmpRange.countType4;
+  }
+
+  log.push('=== 合并结果 ===');
+  log.push('Bootloader: 0x' + bootRange.min.toString(16) + ' ~ 0x' + bootRange.max.toString(16) +
+           ' (' + (bootRange.max - bootRange.min + 1) + ' 字节)');
+  log.push('应用固件:   0x' + appRange.min.toString(16) + ' ~ 0x' + appRange.max.toString(16) +
+           ' (' + (appRange.max - appRange.min + 1) + ' 字节)');
+  log.push('合并后地址范围: 0x' + addrRange.min.toString(16) + ' ~ 0x' + addrRange.max.toString(16));
+  log.push('数据记录总数: ' + addrRange.countType0);
+
+  const { bin, binSize, padBytes } = mapToBin(dataMap, addrRange.max);
+  log.push('合并 BIN: ' + binSize + ' 字节 (' + (binSize / 1024).toFixed(1) + ' KB)');
+
+  return {
+    bin: bin,
+    log: log,
+    name: 'OTA_merged.bin',
+    bootRange: bootRange,
+    appRange: appRange
+  };
+}
+
+// 轻量解析：只算地址范围，不构造 dataMap（用于文件选择时即时预览）
+async function quickHexInfo(file) {
+  const tmpMap = new Map();
+  const tmpRange = { min: null, max: null, countType0: 0, countType2: 0, countType4: 0 };
+  await parseHexToMap(file, tmpMap, tmpRange, []);
+  if (tmpRange.min === null) throw new Error(file.name + ': 无数据记录');
+  return {
+    min: tmpRange.min,
+    max: tmpRange.max,
+    span: tmpRange.max - tmpRange.min + 1
+  };
+}
+
+// ===== 烧录模式切换 =====
+document.querySelectorAll('input[name="burn-mode"]').forEach(r => {
+  r.addEventListener('change', e => {
+    document.getElementById('single-mode').style.display =
+      e.target.value === 'single' ? 'block' : 'none';
+    document.getElementById('ota-mode').style.display =
+      e.target.value === 'ota' ? 'block' : 'none';
+  });
+});
+
+// OTA 文件选择：两个文件都选好后即时预览地址范围
+async function updateOtaPreview() {
+  const bootFile = $('ota-boot-file').files[0];
+  const appFile = $('ota-app-file').files[0];
+  const btn = $('ota-merge-upload-btn');
+  const preview = $('ota-merge-preview');
+  const bootInfo = $('ota-boot-info');
+  const appInfo = $('ota-app-info');
+
+  bootInfo.textContent = '';
+  appInfo.textContent = '';
+  preview.textContent = '';
+  preview.classList.remove('error');
+  btn.disabled = true;
+
+  if (bootFile) {
+    try {
+      const info = await quickHexInfo(bootFile);
+      bootInfo.textContent = '0x' + info.min.toString(16) + ' ~ 0x' + info.max.toString(16) +
+                            ' (' + (info.span / 1024).toFixed(1) + ' KB)';
+    } catch (e) {
+      bootInfo.textContent = '解析失败: ' + e.message;
+    }
+  }
+  if (appFile) {
+    try {
+      const info = await quickHexInfo(appFile);
+      appInfo.textContent = '0x' + info.min.toString(16) + ' ~ 0x' + info.max.toString(16) +
+                           ' (' + (info.span / 1024).toFixed(1) + ' KB)';
+    } catch (e) {
+      appInfo.textContent = '解析失败: ' + e.message;
+    }
+  }
+
+  if (!bootFile || !appFile) return;
+
+  // 完整预览
+  try {
+    const bootInfo2 = await quickHexInfo(bootFile);
+    const appInfo2 = await quickHexInfo(appFile);
+    const overlap = appInfo2.min <= bootInfo2.max;
+    const bootClass = (bootInfo2.min === 0 && bootInfo2.max <= 0x07FF) ? 'addr-ok' : 'addr-warn';
+    const appClass = (appInfo2.min >= 0x0800) ? 'addr-ok' : 'addr-warn';
+    let html = 'Bootloader  0x' + bootInfo2.min.toString(16).padStart(4, '0') +
+               ' ~ 0x' + bootInfo2.max.toString(16).padStart(4, '0') +
+               '  (' + (bootInfo2.span / 1024).toFixed(1) + ' KB)\n';
+    html += '应用固件    0x' + appInfo2.min.toString(16).padStart(4, '0') +
+            ' ~ 0x' + appInfo2.max.toString(16).padStart(4, '0') +
+            '  (' + (appInfo2.span / 1024).toFixed(1) + ' KB)\n';
+    html += '合并后 BIN  256 KB';
+    if (overlap) {
+      html += '\n⚠️ 地址重叠：应用起始 0x' + appInfo2.min.toString(16) +
+              ' <= Bootloader 结束 0x' + bootInfo2.max.toString(16);
+      preview.classList.add('error');
+      btn.disabled = true;
+    } else {
+      btn.disabled = false;
+    }
+    preview.textContent = html;
+  } catch (e) {
+    preview.textContent = '预览失败: ' + e.message;
+    preview.classList.add('error');
+  }
+}
+
+$('ota-boot-file').addEventListener('change', updateOtaPreview);
+$('ota-app-file').addEventListener('change', updateOtaPreview);
+
+// 合并并上传
+$('ota-merge-upload-btn').addEventListener('click', async () => {
+  const bootFile = $('ota-boot-file').files[0];
+  const appFile = $('ota-app-file').files[0];
+  if (!bootFile || !appFile) {
+    alert('请选择两个 .hex 文件');
+    return;
+  }
+  const btn = $('ota-merge-upload-btn');
+  const progress = $('ota-merge-progress');
+  btn.disabled = true;
+  progress.textContent = '合并中...';
+
+  try {
+    const result = await mergeOtaHex(bootFile, appFile);
+    progress.innerHTML = result.log.join('<br>') + '<br>上传中...';
+
+    const blob = new Blob([result.bin], { type: 'application/octet-stream' });
+    const formData = new FormData();
+    formData.append('file', blob, result.name);
+
+    const resp = await fetch('/api/upload', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (data.success) {
+      progress.innerHTML = result.log.join('<br>') +
+                           '<br><strong style="color: var(--success)">上传成功: ' +
+                           data.filename + ' (' + data.size + ' 字节)</strong>';
+      refreshFileList();
+      // 自动选中新上传的合并 BIN
+      selectedFile = data.filename;
+      $('selected-file').textContent = selectedFile;
+      setTimeout(refreshFileList, 100);  // 列表刷新后再标 selected
+    } else {
+      progress.innerHTML = result.log.join('<br>') +
+                           '<br><strong style="color: var(--danger)">上传失败: ' +
+                           (data.error || '未知错误') + '</strong>';
+    }
+  } catch (e) {
+    progress.innerHTML = '<strong style="color: var(--danger)">合并失败: ' + e.message + '</strong>';
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 // ===== 文件上传 =====
 $('upload-btn').addEventListener('click', async () => {
@@ -1468,7 +1744,7 @@ function init() {
 init();
 
 )=====";
-const size_t app_js_len = 27947;
+const size_t app_js_len = 36728;
 
 // config.json (96 bytes, application/json)
 const char config_json[] PROGMEM = R"=====(

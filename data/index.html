@@ -30,10 +30,34 @@
 
       <div class="card">
         <h3>上传固件</h3>
-        <input type="file" id="file-input" accept=".bin,.hex">
-        <button id="upload-btn" class="btn">上传</button>
-        <div id="upload-progress" class="progress-text"></div>
-        <div class="hint">支持 .bin（直接烧录）和 .hex（自动转换为 BIN，填充到 256KB）</div>
+        <div class="burn-mode-switch">
+          <label><input type="radio" name="burn-mode" value="single" checked> 单文件</label>
+          <label><input type="radio" name="burn-mode" value="ota"> OTA 分体固件</label>
+        </div>
+
+        <div id="single-mode" class="burn-mode-panel">
+          <input type="file" id="file-input" accept=".bin,.hex">
+          <button id="upload-btn" class="btn">上传</button>
+          <div id="upload-progress" class="progress-text"></div>
+          <div class="hint">支持 .bin（直接烧录）和 .hex（自动转换为 BIN，填充到 256KB）</div>
+        </div>
+
+        <div id="ota-mode" class="burn-mode-panel" style="display:none;">
+          <div class="ota-file-slot">
+            <label>① OTA Bootloader (.hex)</label>
+            <input type="file" id="ota-boot-file" accept=".hex">
+            <span id="ota-boot-info" class="file-meta"></span>
+          </div>
+          <div class="ota-file-slot">
+            <label>② 应用固件 (.hex)</label>
+            <input type="file" id="ota-app-file" accept=".hex">
+            <span id="ota-app-info" class="file-meta"></span>
+          </div>
+          <div id="ota-merge-preview" class="ota-preview"></div>
+          <button id="ota-merge-upload-btn" class="btn primary" disabled>合并并上传</button>
+          <div id="ota-merge-progress" class="progress-text"></div>
+          <div class="hint">CC2530 OTA 固件分 Bootloader (0x0000~0x07FF) + 应用 (0x0800 起)，前端合并为一个 256KB BIN 后复用现有烧录链路</div>
+        </div>
       </div>
 
       <div class="card">

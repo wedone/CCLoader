@@ -340,3 +340,47 @@ select:focus {
   font-size: 13px;
   line-height: 1.6;
 }
+
+/* 烧录模式切换 */
+.burn-mode-switch {
+  display: flex;
+  gap: 16px;
+  padding: 6px 0;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.burn-mode-switch label {
+  cursor: pointer;
+  font-weight: 500;
+}
+.burn-mode-panel {
+  padding-top: 4px;
+}
+.ota-file-slot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.ota-file-slot label {
+  min-width: 180px;
+  font-weight: 500;
+  margin-right: 0;
+}
+.ota-preview {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px;
+  margin: 8px 0;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: pre-line;
+  line-height: 1.6;
+  min-height: 20px;
+}
+.ota-preview.error { color: var(--danger); }
+.ota-preview .addr-ok { color: var(--success); }
+.ota-preview .addr-warn { color: var(--warning); }
