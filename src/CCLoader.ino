@@ -390,8 +390,8 @@ struct BurnState {
 };
 BurnState g_burn;
 
-// 监控缓冲
-#define MONITOR_BUF_SIZE 128
+// 监控缓冲：256 字节攒一批推送，降低 SSE 频率，减少堆压力
+#define MONITOR_BUF_SIZE 256
 uint8_t g_monitor_buf[MONITOR_BUF_SIZE];
 uint16_t g_monitor_len = 0;
 uint32_t g_monitor_bytes_total = 0;
@@ -808,13 +808,14 @@ void burnFromLittleFS(const String& filename, bool verify) {
     g_burn.current_block = blockIndex;
     g_burn.percent = (blockIndex * 100) / g_burn.total_blocks;
 
-    // 每 32 块推送一次进度 + 处理 WiFi（约 16 次/256KB）
-    // 频率太高会严重拖慢烧录（handleClient 阻塞 + 浏览器轮询）
-    // 32 块 ≈ 16KB，进度条每 6% 更新一次，体感流畅
-    if (blockIndex % 32 == 0 || blockIndex == g_burn.total_blocks) {
+    // 每 16 块推送一次进度 + 处理 WiFi（约 32 次/256KB）
+    // 原 32 块间隔在偶发慢块时可能踩 ESP8266 软件 WDT (~3.2s) 边界
+    // 16 块 ≈ 0.8-1.6s 间隔，进度条每 3% 更新一次，仍流畅
+    if (blockIndex % 16 == 0 || blockIndex == g_burn.total_blocks) {
       pushBurnProgress();
       sseLoop();
       server.handleClient();
+      yield();  // 显式喂狗 + 让 WiFi 任务调度
     }
   }
 
@@ -876,16 +877,24 @@ void exitMonitorMode() {
 }
 
 void handleMonitoring() {
-  // 从 Serial (GPIO3) 读取 CC2530 日志
-  while (Serial.available()) {
+  // 限制单次 loop 读取字节数，避免 CC2530 高速输出时 while(Serial.available())
+  // 长时间占用 CPU，导致 server.handleClient() 被饿死、/api/status 等接口假死
+  // 128 字节 ≈ 1ms @ 115200bps，足够让 loop() 每秒调度数百次 HTTP
+  const uint16_t MAX_READ_PER_LOOP = 128;
+  uint16_t readThisCall = 0;
+  while (Serial.available() && readThisCall < MAX_READ_PER_LOOP) {
     uint8_t ch = Serial.read();
     if (g_monitor_len < MONITOR_BUF_SIZE) {
       g_monitor_buf[g_monitor_len++] = ch;
       g_monitor_bytes_total++;
     }
+    readThisCall++;
   }
-  // 攒够 64 字节或 50ms 静默就推送
-  if (g_monitor_len >= 64 || (g_monitor_len > 0 && millis() - g_monitor_last_push > 50)) {
+  // 攒够 256 字节或 200ms 静默才推送：
+  // - 原 50ms 太频繁，每秒触发 ~20 次 String 拼接 + base64 + 多客户端 write
+  // - 200ms 仍然在人类感知范围内，但堆压力降低 4 倍
+  if (g_monitor_len >= MONITOR_BUF_SIZE ||
+      (g_monitor_len > 0 && millis() - g_monitor_last_push > 200)) {
     pushMonitorData();
     g_monitor_last_push = millis();
   }
@@ -1036,31 +1045,18 @@ void handleBurn() {
   uint32_t totalBlocks = (f.size() + 511) / 512;
   f.close();
 
-  // async 模式：立即返回 task_id，烧录在 loop() 中执行
-  // Agent 可轮询 /api/status 跟踪进度，避免长连接超时
-  bool async = server.hasArg("async");
-  if (async) {
-    g_burn_task_id++;
-    g_burn_pending = true;
-    g_burn_pending_filename = filename;
-    g_burn_pending_verify = verify;
-    String resp = "{\"success\":true,\"async\":true,\"task_id\":" + String(g_burn_task_id) +
-                  ",\"total_blocks\":" + String(totalBlocks) + "}";
-    server.send(202, "application/json", resp);
-    Serial.printf("Burn queued (async): task=%u file=%s verify=%d blocks=%u\n",
-                  g_burn_task_id, filename.c_str(), verify, totalBlocks);
-    return;
-  }
-
-  // 同步模式：立即响应 HTTP，烧录在阻塞中执行（SSE 推送进度）
-  String resp = "{\"success\":true,\"async\":false,\"total_blocks\":" + String(totalBlocks) + "}";
-  server.send(200, "application/json", resp);
-
-  g_state = STATE_BURNING;
-  digitalWrite(LED, HIGH);
-  burnFromLittleFS(filename, verify);
-  digitalWrite(LED, LOW);
-  g_state = STATE_IDLE;
+  // 强制异步：立即返回 task_id，烧录在 loop() 中执行
+  // 原同步模式会阻塞 HTTP ~90 秒（256KB BIN），期间 /api/status 等接口全部超时
+  // AI Agent 调用时极易触发假死，故移除同步分支。?async=1 参数仍兼容但不再必需
+  g_burn_task_id++;
+  g_burn_pending = true;
+  g_burn_pending_filename = filename;
+  g_burn_pending_verify = verify;
+  String resp = "{\"success\":true,\"async\":true,\"task_id\":" + String(g_burn_task_id) +
+                ",\"total_blocks\":" + String(totalBlocks) + "}";
+  server.send(202, "application/json", resp);
+  Serial.printf("Burn queued: task=%u file=%s verify=%d blocks=%u\n",
+                g_burn_task_id, filename.c_str(), verify, totalBlocks);
 }
 
 void handleMonitor() {
@@ -1113,63 +1109,82 @@ void handleResetCC2530() {
 }
 
 // Agent 友好：获取监控日志环形缓冲（支持断点续传）
-// GET /api/monitor/buffer          - 返回全部缓冲
-// GET /api/monitor/buffer?since=N  - 返回从累计字节 N 之后的数据
-// 响应：{"success":true,"total":12345,"offset":0,"data":"<base64>","truncated":false}
+// GET /api/monitor/buffer                      - 返回最近 max_bytes 字节（默认 4096）
+// GET /api/monitor/buffer?since=N              - 返回从累计字节 N 之后的数据
+// GET /api/monitor/buffer?since=N&max_bytes=M  - 限制单次返回字节数
+// 响应：{"success":true,"total":N,"offset":N,"bytes":N,"truncated":false,"data":"<base64>"}
+// 流式分块输出，避免 8KB base64 (~11KB) + String 拼接导致堆碎片化/OOM
 void handleMonitorBuffer() {
   uint32_t since = 0;
   if (server.hasArg("since")) {
     since = (uint32_t)strtoul(server.arg("since").c_str(), NULL, 10);
+  }
+  // 限制单次返回最大字节数。原版可能返回全部 8KB → base64 11KB + String 拼接 22KB
+  // 临时堆分配在 ESP8266 ~50KB 堆上极易失败。默认 4KB，可下调
+  uint32_t maxBytes = 4096;
+  if (server.hasArg("max_bytes")) {
+    long mb = strtol(server.arg("max_bytes").c_str(), NULL, 10);
+    if (mb > 0 && mb <= 8192) maxBytes = (uint32_t)mb;
   }
 
   uint32_t total = g_monitor_ring_total;
   uint32_t buffered = (total < MONITOR_RING_SIZE) ? total : MONITOR_RING_SIZE;
   uint32_t oldest = total - buffered;  // 缓冲中最早字节对应的累计偏移
 
-  String json = "{\"success\":true";
-  json += ",\"total\":" + String(total);
-  json += ",\"buffered\":" + String(buffered);
+  uint32_t startOffset, bytesToRead;
+  bool truncated = false;
+  uint32_t missed = 0;
 
   if (since >= total) {
-    // 没有新数据
-    json += ",\"offset\":" + String(total);
-    json += ",\"data\":\"\"";
-    json += ",\"truncated\":false";
+    // 没有新数据，直接发完整 JSON（小）
+    String json = "{\"success\":true,\"total\":" + String(total) +
+                  ",\"offset\":" + String(total) +
+                  ",\"bytes\":0,\"truncated\":false,\"data\":\"\"}";
+    server.send(200, "application/json", json);
+    return;
   } else if (since < oldest) {
     // 请求的偏移已超出缓冲范围（数据被覆盖）
-    // 返回全部缓冲，并标记 truncated
-    uint32_t start = (total < MONITOR_RING_SIZE) ? 0 : (g_monitor_ring_head);
-    String b64;
-    if (total < MONITOR_RING_SIZE) {
-      b64 = base64Encode(g_monitor_ring, total);
-    } else {
-      // 从 head 开始读 MONITOR_RING_SIZE 字节
-      b64 = base64Encode(g_monitor_ring + start, MONITOR_RING_SIZE - start);
-      b64 += base64Encode(g_monitor_ring, start);
-    }
-    json += ",\"offset\":" + String(oldest);
-    json += ",\"data\":\"" + b64 + "\"";
-    json += ",\"truncated\":true";
-    json += ",\"missed\":" + String(oldest - since);
+    startOffset = oldest;
+    bytesToRead = buffered;
+    truncated = true;
+    missed = oldest - since;
   } else {
-    // 正常返回 since 到 total 的数据
-    uint32_t bytesToRead = total - since;
-    uint32_t startInRing = since % MONITOR_RING_SIZE;
-    // 拼接（可能跨环形边界）
-    String b64;
-    if (startInRing + bytesToRead <= MONITOR_RING_SIZE) {
-      b64 = base64Encode(g_monitor_ring + startInRing, bytesToRead);
-    } else {
-      uint32_t firstPart = MONITOR_RING_SIZE - startInRing;
-      b64 = base64Encode(g_monitor_ring + startInRing, firstPart);
-      b64 += base64Encode(g_monitor_ring, bytesToRead - firstPart);
-    }
-    json += ",\"offset\":" + String(since);
-    json += ",\"data\":\"" + b64 + "\"";
-    json += ",\"truncated\":false";
+    startOffset = since;
+    bytesToRead = total - since;
   }
-  json += "}";
-  server.send(200, "application/json", json);
+
+  // 限制单次返回
+  if (bytesToRead > maxBytes) bytesToRead = maxBytes;
+
+  // 流式分块输出（chunked transfer）
+  // 先写头部字段，再分块写 base64 数据，最后闭合 JSON
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "application/json", "");
+  String header = "{\"success\":true,\"total\":" + String(total) +
+                  ",\"offset\":" + String(startOffset) +
+                  ",\"bytes\":" + String(bytesToRead) +
+                  ",\"truncated\":" + String(truncated ? "true" : "false");
+  if (missed > 0) header += ",\"missed\":" + String(missed);
+  header += ",\"data\":\"";
+  server.sendContent(header);
+
+  // 分块输出 base64：768 字节原始 -> 1024 base64 字符，单次堆分配 < 1.5KB
+  uint32_t startInRing = startOffset % MONITOR_RING_SIZE;
+  uint32_t remaining = bytesToRead;
+  const uint16_t CHUNK_RAW = 768;
+  uint8_t chunk[CHUNK_RAW];
+  while (remaining > 0) {
+    uint32_t thisChunk = (remaining > CHUNK_RAW) ? CHUNK_RAW : remaining;
+    for (uint32_t i = 0; i < thisChunk; i++) {
+      chunk[i] = g_monitor_ring[(startInRing + i) % MONITOR_RING_SIZE];
+    }
+    String b64 = base64Encode(chunk, thisChunk);
+    server.sendContent(b64);
+    startInRing = (startInRing + thisChunk) % MONITOR_RING_SIZE;
+    remaining -= thisChunk;
+    yield();  // 喂狗 + 让 WiFi 任务运行
+  }
+  server.sendContent("\"}");
 }
 
 void handleFiles() {

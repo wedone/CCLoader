@@ -26,7 +26,9 @@ import requests
 
 DEFAULT_IP = "10.0.0.147"
 DEFAULT_BIN = "DIYRuZRT_256k.bin"
-TIMEOUT = 5
+TIMEOUT = 5          # 普通 HTTP API 调用超时
+SSE_READ_TIMEOUT = 8  # SSE 单次 read 超时（秒），无数据时也强制返回让主循环检查
+SSE_HEARTBEAT_TIMEOUT = 30  # SSE 多少秒无任何数据视为设备卡死
 
 
 def hr(t):
@@ -48,20 +50,37 @@ def list_bin_files(ip):
 
 
 def burn_async(ip, filename, verify):
-    """异步烧录（新固件）：返回 (task_id, total_blocks) 或 None"""
-    r = requests.post(
-        f"http://{ip}/api/burn?async=1",
-        json={"filename": filename, "verify": verify},
-        timeout=TIMEOUT,
-    )
+    """异步烧录（新固件）：返回 (task_id, total_blocks)。
+    新固件已强制异步，旧固件降级时返回 None。"""
+    try:
+        r = requests.post(
+            f"http://{ip}/api/burn",
+            json={"filename": filename, "verify": verify},
+            timeout=TIMEOUT,
+        )
+    except requests.exceptions.RequestException as e:
+        print(f"  [burn 请求失败] {e}")
+        return None
     if r.status_code == 202:
         d = r.json()
         return d.get("task_id"), d.get("total_blocks", 0)
+    # 旧固件兼容：显式 ?async=1 探测
+    try:
+        r = requests.post(
+            f"http://{ip}/api/burn?async=1",
+            json={"filename": filename, "verify": verify},
+            timeout=TIMEOUT,
+        )
+        if r.status_code == 202:
+            d = r.json()
+            return d.get("task_id"), d.get("total_blocks", 0)
+    except requests.exceptions.RequestException:
+        pass
     return None
 
 
 def burn_sync(ip, filename, verify):
-    """同步烧录（旧固件）：阻塞直到完成，返回 total_blocks。
+    """同步烧录（仅旧固件兼容路径，新固件不会走到这里）。
     同步烧录期间 HTTP 会被阻塞（256KB 约 90 秒），需用长 timeout。"""
     r = requests.post(
         f"http://{ip}/api/burn",
@@ -124,43 +143,57 @@ def start_monitor(ip, baud=115200, auto_reset=True):
 
 
 def sse_capture(ip, duration_s, trigger_reset=True):
-    """SSE 实时接收日志，可选触发复位"""
+    """SSE 实时接收日志，可选触发复位。
+    - 用 socket 超时避免设备卡死时 Python 永久挂起
+    - 心跳检测：SSE_HEARTBEAT_TIMEOUT 秒无任何数据视为设备卡死，主动断开重连
+    """
     received = bytearray()
     stop_flag = {"v": False}
+    last_data_time = {"t": time.time()}
 
     def loop():
+        import socket
         try:
-            with requests.get(f"http://{ip}:81/", stream=True, timeout=None) as r:
-                buf = b""
-                for chunk in r.iter_content(chunk_size=128):
-                    if stop_flag["v"]:
-                        break
-                    if not chunk:
+            # 用 socket 超时控制 read，避免永久阻塞
+            r = requests.get(f"http://{ip}:81/", stream=True, timeout=SSE_READ_TIMEOUT)
+            # 设置底层 socket 超时
+            r.raw._fp.fp.settimeout(SSE_READ_TIMEOUT)
+            buf = b""
+            for chunk in r.iter_content(chunk_size=128):
+                if stop_flag["v"]:
+                    break
+                if not chunk:
+                    continue
+                last_data_time["t"] = time.time()
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    line = line.rstrip(b"\r")
+                    if not line.startswith(b"data: "):
                         continue
-                    buf += chunk
-                    while b"\n" in buf:
-                        line, buf = buf.split(b"\n", 1)
-                        line = line.rstrip(b"\r")
-                        if not line.startswith(b"data: "):
-                            continue
-                        try:
-                            msg = json.loads(line[6:])
-                        except Exception:
-                            continue
-                        t = msg.get("type")
-                        if t == "monitor_data":
-                            data = base64.b64decode(msg.get("data", ""))
-                            sys.stdout.write(data.decode("utf-8", errors="replace"))
-                            sys.stdout.flush()
-                            received.extend(data)
-                        elif t == "monitor_start":
-                            print(f"[SSE] 监控开始 baud={msg.get('baud')}")
-                        elif t == "monitor_reset":
-                            print("[SSE] CC2530 已复位")
-                        elif t == "monitor_stop":
-                            print("[SSE] 监控停止")
-                            stop_flag["v"] = True
-                            break
+                    try:
+                        msg = json.loads(line[6:])
+                    except Exception:
+                        continue
+                    t = msg.get("type")
+                    if t == "monitor_data":
+                        data = base64.b64decode(msg.get("data", ""))
+                        sys.stdout.write(data.decode("utf-8", errors="replace"))
+                        sys.stdout.flush()
+                        received.extend(data)
+                    elif t == "monitor_start":
+                        print(f"[SSE] 监控开始 baud={msg.get('baud')}")
+                    elif t == "monitor_reset":
+                        print("[SSE] CC2530 已复位")
+                    elif t == "monitor_stop":
+                        print("[SSE] 监控停止")
+                        stop_flag["v"] = True
+                        break
+            r.close()
+        except requests.exceptions.RequestException as e:
+            print(f"[SSE 网络错误] {e}")
+        except socket.timeout:
+            print(f"[SSE] {SSE_READ_TIMEOUT}s 无数据，断开（设备可能卡死）")
         except Exception as e:
             print(f"[SSE 错误] {e}")
 
@@ -178,9 +211,14 @@ def sse_capture(ip, duration_s, trigger_reset=True):
     print(f"--- 等待 {duration_s}s 接收日志 ---")
     deadline = time.time() + duration_s
     while time.time() < deadline and not stop_flag["v"]:
+        # 心跳检测：长时间无数据则主动停止
+        if time.time() - last_data_time["t"] > SSE_HEARTBEAT_TIMEOUT:
+            print(f"[SSE] {SSE_HEARTBEAT_TIMEOUT}s 心跳超时，主动断开")
+            stop_flag["v"] = True
+            break
         time.sleep(0.5)
     stop_flag["v"] = True
-    t.join(timeout=2)
+    t.join(timeout=3)
     return bytes(received)
 
 
