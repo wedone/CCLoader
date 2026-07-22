@@ -631,10 +631,12 @@ function updateBurnProgress(msg) {
   if (msg.done) {
     appendLog($('burn-log'), '烧录完成', 'success');
     $('burn-btn').disabled = false;
-    // 自动切换到监控页
-    setTimeout(() => {
-      document.querySelector('.tab-btn[data-tab="monitor"]').click();
-    }, 1000);
+    // 烧录完成后不再自动跳到监控页，由用户手动切换
+    // 勾选"烧录完成重启烧录器"时调用 /api/reboot 重启 ESP8266
+    if ($('reboot-burner-check').checked) {
+      appendLog($('burn-log'), '正在重启烧录器...', 'success');
+      fetch('/api/reboot', { method: 'POST' }).catch(() => {});
+    }
   }
 }
 

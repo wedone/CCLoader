@@ -6,7 +6,7 @@
 
 namespace WebAssets {
 
-// index.html (16140 bytes, text/html)
+// index.html (16241 bytes, text/html)
 const char index_html[] PROGMEM = R"=====(
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -79,6 +79,7 @@ const char index_html[] PROGMEM = R"=====(
         <h3>烧录</h3>
         <div>选中: <span id="selected-file">未选择</span></div>
         <label><input type="checkbox" id="verify-check"> 烧录后校验</label>
+        <label><input type="checkbox" id="reboot-burner-check"> 烧录完成重启烧录器</label>
         <button id="burn-btn" class="btn primary">开始烧录</button>
 
         <div class="progress-container">
@@ -346,7 +347,7 @@ curl -F "image=@.pio/build/nodemcuv2/firmware.bin" http://10.0.0.147/update</pre
 </html>
 
 )=====";
-const size_t index_html_len = 16140;
+const size_t index_html_len = 16241;
 
 // style.css (9164 bytes, text/css)
 const char style_css[] PROGMEM = R"=====(
@@ -740,7 +741,7 @@ select:focus {
 )=====";
 const size_t style_css_len = 9164;
 
-// app.js (36728 bytes, application/javascript)
+// app.js (36929 bytes, application/javascript)
 const char app_js[] PROGMEM = R"=====(
 // CCLoader WebUI 前端逻辑
 // 使用 SSE (EventSource) 接收实时事件，无外部库依赖
@@ -1375,10 +1376,12 @@ function updateBurnProgress(msg) {
   if (msg.done) {
     appendLog($('burn-log'), '烧录完成', 'success');
     $('burn-btn').disabled = false;
-    // 自动切换到监控页
-    setTimeout(() => {
-      document.querySelector('.tab-btn[data-tab="monitor"]').click();
-    }, 1000);
+    // 烧录完成后不再自动跳到监控页，由用户手动切换
+    // 勾选"烧录完成重启烧录器"时调用 /api/reboot 重启 ESP8266
+    if ($('reboot-burner-check').checked) {
+      appendLog($('burn-log'), '正在重启烧录器...', 'success');
+      fetch('/api/reboot', { method: 'POST' }).catch(() => {});
+    }
   }
 }
 
@@ -1744,7 +1747,7 @@ function init() {
 init();
 
 )=====";
-const size_t app_js_len = 36728;
+const size_t app_js_len = 36929;
 
 // config.json (96 bytes, application/json)
 const char config_json[] PROGMEM = R"=====(
