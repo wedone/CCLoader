@@ -830,10 +830,10 @@ void burnFromLittleFS(const String& filename, bool verify) {
 }
 
 // ===== CC2530 复位（通过 GPIO5/RESETn 控制，无需手动按按钮）=====
-// 拉低 RESETn 10ms 再拉高，CC2530 重新从 main() 开始执行
+// 通用串口监控场景：只操作 RESETn 一根线
+// 拉低 DD/DC 是调试专用副作用，会让 CC Debug 接口进入非标准电平，
+// 对运行中的应用固件有干扰，故移除
 void resetCC2530() {
-  digitalWrite(DD, LOW);
-  digitalWrite(DC, LOW);
   digitalWrite(RESET, LOW);
   delay(10);
   digitalWrite(RESET, HIGH);
@@ -1099,7 +1099,7 @@ void handleMonitor() {
   }
   String body = server.arg("plain");
   uint32_t baud = (uint32_t)jsonGetInt(body, "baud", 115200);
-  bool autoReset = jsonGetBool(body, "auto_reset", true);  // 默认自动复位
+  bool autoReset = jsonGetBool(body, "auto_reset", false);  // 默认非侵入式，不自动复位目标设备
   if (baud < 9600 || baud > 230400) {
     server.send(400, "application/json", "{\"error\":\"invalid baud\"}");
     return;
@@ -1125,12 +1125,14 @@ void handleResetCC2530() {
     return;
   }
   // 监控中复位：先暂停接收，复位后继续
+  // 保留 g_monitor_ring_total / g_monitor_bytes_total 累计计数：
+  // Agent 用 /api/monitor/buffer?since=N 断点续传时，offset 语义保持单调递增，
+  // 手动复位只清前端显示（通过 monitor_reset 事件），不影响后端计数
   bool wasMonitoring = (g_state == STATE_MONITORING);
   if (wasMonitoring) {
-    // 推送剩余数据
+    // 推送残留数据
     if (g_monitor_len > 0) pushMonitorData();
     g_monitor_len = 0;
-    g_monitor_bytes_total = 0;
   }
   resetCC2530();
   server.send(200, "application/json", "{\"success\":true}");

@@ -653,7 +653,9 @@ $('monitor-start-btn').addEventListener('click', async () => {
     });
     const result = await resp.json();
     if (!result.success) {
-      alert('启动监控失败: ' + result.error);
+      const err = result.error || '未知错误';
+      const msg = err === 'busy' ? '设备忙（烧录中或监控中），请先停止当前操作' : '启动监控失败: ' + err;
+      alert(msg);
       $('monitor-start-btn').disabled = false;
     }
     // 等待 monitor_start SSE 事件再切按钮状态
@@ -704,9 +706,9 @@ function onMonitorStart(baud) {
   $('search-input').disabled = false;
   const autoReset = $('auto-reset-check').checked;
   if (autoReset) {
-    appendLog($('monitor-log'), '监控开始 @ ' + baud + ' bps（已自动复位 CC2530）', 'success');
+    appendLog($('monitor-log'), '监控开始 @ ' + baud + ' bps（已自动复位 CC2530，捕获启动日志）', 'success');
   } else {
-    appendLog($('monitor-log'), '监控开始 @ ' + baud + ' bps，点"复位 CC2530"看启动日志', 'success');
+    appendLog($('monitor-log'), '监控开始 @ ' + baud + ' bps（非侵入式），点"复位 CC2530"可重启目标', 'success');
   }
 }
 

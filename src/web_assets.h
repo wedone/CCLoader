@@ -6,7 +6,7 @@
 
 namespace WebAssets {
 
-// index.html (18402 bytes, text/html)
+// index.html (18396 bytes, text/html)
 const char index_html[] PROGMEM = R"=====(
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -108,11 +108,11 @@ const char index_html[] PROGMEM = R"=====(
             <option value="230400">230400</option>
           </select>
         </label>
-        <label><input type="checkbox" id="auto-reset-check" checked> 开始时自动复位 CC2530</label>
+        <label><input type="checkbox" id="auto-reset-check"> 进入时自动复位 CC2530</label>
         <button id="monitor-start-btn" class="btn primary">开始监控</button>
         <button id="monitor-stop-btn" class="btn" disabled>停止</button>
         <button id="reset-cc-btn" class="btn" disabled>复位 CC2530</button>
-        <div class="hint">自动复位 = 进入监控时拉低 RESETn 10ms，捕获从 main() 第一行开始的完整启动日志</div>
+        <div class="hint">通用串口监控（非侵入式），如需捕获从 main() 开始的启动日志请勾选"自动复位"</div>
       </div>
 
       <div class="card">
@@ -173,7 +173,7 @@ const char index_html[] PROGMEM = R"=====(
 
       <div class="card">
         <h3>设备信息</h3>
-        <div>固件版本: CCLoader-WebUI v1.1</div>
+        <div>固件版本: CCLoader-WebUI v1.2</div>
         <div>运行时长: <span id="uptime">-</span></div>
         <div>WiFi 信号: <span id="rssi">-</span> dBm</div>
         <div>IP 地址: <span id="device-ip">-</span></div>
@@ -368,7 +368,7 @@ curl -F "image=@.pio/build/nodemcuv2/firmware.bin" http://10.0.0.147/update</pre
 </html>
 
 )=====";
-const size_t index_html_len = 18402;
+const size_t index_html_len = 18396;
 
 // style.css (9164 bytes, text/css)
 const char style_css[] PROGMEM = R"=====(
@@ -762,7 +762,7 @@ select:focus {
 )=====";
 const size_t style_css_len = 9164;
 
-// app.js (36929 bytes, application/javascript)
+// app.js (37119 bytes, application/javascript)
 const char app_js[] PROGMEM = R"=====(
 // CCLoader WebUI 前端逻辑
 // 使用 SSE (EventSource) 接收实时事件，无外部库依赖
@@ -1419,7 +1419,9 @@ $('monitor-start-btn').addEventListener('click', async () => {
     });
     const result = await resp.json();
     if (!result.success) {
-      alert('启动监控失败: ' + result.error);
+      const err = result.error || '未知错误';
+      const msg = err === 'busy' ? '设备忙（烧录中或监控中），请先停止当前操作' : '启动监控失败: ' + err;
+      alert(msg);
       $('monitor-start-btn').disabled = false;
     }
     // 等待 monitor_start SSE 事件再切按钮状态
@@ -1470,9 +1472,9 @@ function onMonitorStart(baud) {
   $('search-input').disabled = false;
   const autoReset = $('auto-reset-check').checked;
   if (autoReset) {
-    appendLog($('monitor-log'), '监控开始 @ ' + baud + ' bps（已自动复位 CC2530）', 'success');
+    appendLog($('monitor-log'), '监控开始 @ ' + baud + ' bps（已自动复位 CC2530，捕获启动日志）', 'success');
   } else {
-    appendLog($('monitor-log'), '监控开始 @ ' + baud + ' bps，点"复位 CC2530"看启动日志', 'success');
+    appendLog($('monitor-log'), '监控开始 @ ' + baud + ' bps（非侵入式），点"复位 CC2530"可重启目标', 'success');
   }
 }
 
@@ -1768,9 +1770,9 @@ function init() {
 init();
 
 )=====";
-const size_t app_js_len = 36929;
+const size_t app_js_len = 37119;
 
-// config.json (90 bytes, application/json)
+// config.json (96 bytes, application/json)
 const char config_json[] PROGMEM = R"=====(
 {
   "wifi_ssid": "",
@@ -1780,6 +1782,6 @@ const char config_json[] PROGMEM = R"=====(
 }
 
 )=====";
-const size_t config_json_len = 90;
+const size_t config_json_len = 96;
 
 }  // namespace WebAssets
