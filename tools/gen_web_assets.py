@@ -19,6 +19,7 @@ FILES = [
     ("style.css", "style_css", "text/css"),
     ("app.js", "app_js", "application/javascript"),
     ("config.json", "config_json", "application/json"),
+    ("help.md", "help_md", "text/plain"),
 ]
 
 def encode(data: bytes) -> str:
