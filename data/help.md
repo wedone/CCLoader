@@ -39,7 +39,7 @@ CC2530 的 3.3V 可从 NodeMCU 的 3V3 引脚取，电流 < 50mA。
 
 ### 2.1 关键规则
 
-- **API 仅接受 `.bin`**：上传 `.hex` 会被拒绝并返回 400 + `hex_not_supported` 错误，响应 `hint` 字段含完整 hex2bin 算法。浏览器端上传 `.hex` 会自动转换，API 调用需自行转换（参考 `data/app.js` 的 `hex2bin()`）。
+- **API 仅接受 `.bin`**：上传 `.hex` 会被拒绝并返回 400 + `hex_not_supported` 错误。浏览器端上传 `.hex` 会自动转换，API 调用需自行转换（算法见下方 2.3 节）。
 - **烧录强制校验**：`/api/burn` 的 `verify` 参数被忽略，固件内部强制 `verify=true`，保证烧录正确性。烧录失败会通过 SSE `burn_progress.error` 和 `/api/status` 的 `burn.error` 字段报出。
 - **烧录强制异步**：`/api/burn` 立即返回 `task_id`，烧录在后台执行。`?async=1` 参数兼容但非必需。通过轮询 `/api/status` 跟踪进度。
 - **NTP 授时**：WiFi 连接后自动同步北京时间（UTC+8），`/api/status` 的 `time` 字段为当前 epoch 秒；未授时返回 0。
@@ -83,6 +83,93 @@ curl -s -X POST http://${IP}/api/stop
 # 7. 可选：重启烧录器（释放内存 / 重新初始化 CC2530）
 curl -s -X POST http://${IP}/api/reboot
 ```
+
+### 2.3 hex2bin 转换算法（API 调用必需）
+
+API 仅接受 `.bin`，上传 `.hex` 会被拒绝。需在客户端自行转换。算法基于 Intel HEX 格式：
+
+**记录格式**：每行以 `:` 开头，结构为 `:LLAAAATT[DD...]CC`
+- `LL`：数据字节数
+- `AAAA`：地址（在该记录类型上下文内）
+- `TT`：记录类型（00=数据/01=结束/02=扩展段地址/04=扩展线性地址/05=起始地址）
+- `DD...`：LL 字节数据
+- `CC`：校验和，`(sum(除最后字节)) & 0xFF` 应为 0
+
+**转换步骤**：
+1. 维护 `baseAddr=0`，逐行解析
+2. `TT=0x00` 数据记录：物理地址 = `baseAddr + AAAA`，写入 Map
+3. `TT=0x04` 扩展线性地址：`baseAddr = data << 16`
+4. `TT=0x02` 扩展段地址：`baseAddr = data << 4`
+5. `TT=0x01` 结束记录：停止解析
+6. `TT=0x05` 起始地址：忽略
+7. 收集所有数据按物理地址排序，缺失地址填 `0xFF`
+8. 尾部填充 `0xFF` 到 256KB（0x40000）以适配 CC2530F256
+
+**Python 参考实现**：
+
+```python
+def hex2bin(hex_path, out_path=None, pad_to=0x40000):
+    """Intel HEX 转 BIN，填充到 pad_to 字节（默认 256KB）"""
+    data_map = {}      # phys_addr -> bytes
+    base_addr = 0
+    min_addr = None
+    max_addr = None
+
+    with open(hex_path, 'r') as f:
+        for line_no, line in enumerate(f, 1):
+            line = line.strip()
+            if not line or line[0] != ':':
+                continue
+            raw = bytes.fromhex(line[1:])
+            if len(raw) < 5:
+                continue
+            b_count = raw[0]
+            b_addr = (raw[1] << 8) | raw[2]
+            b_type = raw[3]
+            data = raw[4:4 + b_count]
+            # 校验和验证
+            if (sum(raw[:-1]) & 0xFF) != 0:
+                raise ValueError(f'line {line_no}: checksum error')
+            if b_type == 0x01:       # 结束
+                break
+            elif b_type == 0x02:     # 扩展段地址
+                base_addr = ((data[0] << 8) | data[1]) << 4
+            elif b_type == 0x04:     # 扩展线性地址
+                base_addr = ((data[0] << 8) | data[1]) << 16
+            elif b_type == 0x05:     # 起始地址，忽略
+                continue
+            elif b_type == 0x00:     # 数据记录
+                phys = base_addr + b_addr
+                for i, b in enumerate(data):
+                    data_map[phys + i] = b
+                if min_addr is None or phys < min_addr:
+                    min_addr = phys
+                end = phys + len(data) - 1
+                if max_addr is None or end > max_addr:
+                    max_addr = end
+
+    if min_addr is None:
+        raise ValueError('HEX 无数据记录')
+
+    # 构造 BIN，缺失地址填 0xFF
+    bin_size = max(max_addr + 1, pad_to)
+    bin_data = bytearray([0xFF] * bin_size)
+    for addr, b in data_map.items():
+        if addr < bin_size:
+            bin_data[addr] = b
+
+    if out_path:
+        with open(out_path, 'wb') as f:
+            f.write(bin_data)
+    return bytes(bin_data)
+
+
+# 使用示例
+hex2bin('CC2530.hex', 'CC2530.bin')
+# 然后 curl -F "file=@CC2530.bin" http://10.0.0.147/api/upload
+```
+
+**OTA 分体固件**（Bootloader + 应用）合并：分别解析两个 .hex 到同一个 `data_map`，Bootloader 应在 0x0000~0x07FF，应用在 0x0800+，地址不重叠则合并后统一填充到 256KB。
 
 ---
 
@@ -188,7 +275,7 @@ A: 在"设置"页重新扫描+连接。若 WebUI 都进不去，删除 LittleFS 
 A: NTP 未同步。固件启动后通过 NTP 自动校准北京时间（UTC+8），通常连接 WiFi 后几秒内完成；AP 配网模式下无网络无法授时，连上 WiFi 后会自动同步。新上传的文件会带正确时间戳。
 
 **Q: API 上传 .hex 报错 hex_not_supported？**
-A: API（curl/Agent）仅接受 .bin，浏览器端上传 .hex 会自动转换但 API 不会。响应 `hint` 字段含完整 hex2bin 算法（Intel HEX 解析 + 256KB 填充），可参考实现。
+A: API（curl/Agent）仅接受 .bin，浏览器端上传 .hex 会自动转换但 API 不会。参考 2.3 节的 hex2bin 算法和 Python 实现，转换后再上传。
 
 **Q: 烧录时 verify 参数不生效？**
 A: API 烧录强制开启校验（verify=true），`verify` 参数被忽略。这是为了保证烧录正确性，避免 AI 跳过校验导致 CC2530 异常。校验失败会在 `burn.error` 字段报出。
