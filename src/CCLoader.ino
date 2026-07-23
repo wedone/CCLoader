@@ -907,16 +907,51 @@ void handleMonitoring() {
 // ===== HTTP 路由 =====
 // 优先使用固件内嵌资源（PROGMEM），OTA 升级时一并更新
 // LittleFS 中的同名文件作为备份（旧固件兼容）
+
+// 分块发送 PROGMEM 大响应（Content-Length + 分块 sendContent_P，每块 1000 字节）
+// 解决 tailscale 等 PMTU < 1500 链路的 IP 分片丢包问题：
+// ESP8266 默认 TCP MSS=1460，单 TCP 段 IP 包 1500 字节，
+// 经 tailscale (PMTU 1280) 转发时 DF=1 分片被丢弃，大响应截断。
+// 每块 1000 字节 → 单 TCP 段 IP 包 ~1040 < 1280，无需分片即可通过。
+// 禁用 Nagle（TCP_NODELAY）防止多个小块合并成超过 PMTU 的大包。
+void sendChunked_P(const char* mime, PGM_P data, size_t len) {
+  WiFiClient client = server.client();
+  client.setNoDelay(true);   // 禁用 Nagle，每块独立发送
+  client.setTimeout(5000);   // 增加写超时
+  server.setContentLength(len);
+  server.sendHeader("Connection", "close");
+  server.send(200, mime, "");  // 只发响应头
+
+  // 自己实现可靠写入：检查 write 返回值，短写时重试
+  // sendContent_P 内部 sendSize 短写后丢弃数据，导致末尾截断
+  const size_t CHUNK = 1000;
+  char buf[CHUNK];
+  for (size_t off = 0; off < len; off += CHUNK) {
+    size_t n = (len - off < CHUNK) ? (len - off) : CHUNK;
+    memcpy_P(buf, data + off, n);  // PROGMEM → RAM
+    size_t written = 0;
+    while (written < n) {
+      int w = client.write(buf + written, n - written);
+      if (w > 0) {
+        written += w;
+      } else {
+        delay(1);  // 发送缓冲区满，等 lwip 腾空
+      }
+      yield();
+    }
+  }
+}
+
 void handleRoot() {
-  server.send_P(200, "text/html", WebAssets::index_html);
+  sendChunked_P("text/html", WebAssets::index_html, WebAssets::index_html_len);
 }
 
 void handleCss() {
-  server.send_P(200, "text/css", WebAssets::style_css);
+  sendChunked_P("text/css", WebAssets::style_css, WebAssets::style_css_len);
 }
 
 void handleJs() {
-  server.send_P(200, "application/javascript", WebAssets::app_js);
+  sendChunked_P("application/javascript", WebAssets::app_js, WebAssets::app_js_len);
 }
 
 void handleStatus() {

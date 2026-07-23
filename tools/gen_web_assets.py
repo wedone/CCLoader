@@ -72,18 +72,21 @@ def main():
             continue
         with open(path, 'rb') as f:
             data = f.read()
-        print(f'  {fname}: {len(data)} bytes')
-        out.append(f'// {fname} ({len(data)} bytes, {mime})')
+        # 统一换行符为 \n：GCC 编译 raw string 时会把 \r\n 转为 \n，
+        # 导致 sizeof 和 _len 不匹配（sizeof 偏小），Content-Length 头错误
+        text = data.decode('utf-8', errors='replace').replace('\r\n', '\n')
+        clean_data = text.encode('utf-8')
+        print(f'  {fname}: {len(data)} bytes -> {len(clean_data)} bytes (去CR)')
+        out.append(f'// {fname} ({len(clean_data)} bytes, {mime})')
         out.append(f'const char {var}[] PROGMEM = R"=====(')
         # 用 raw string literal 避免转义问题
         # 但需要确保数据中不包含 )=====( 这个分隔符
-        text = data.decode('utf-8', errors='replace')
         if ')=====(' in text:
             print(f'[error] {fname} 包含分隔符 )=====(', file=sys.stderr)
             sys.exit(1)
         out.append(text)
         out.append(')=====";')
-        out.append(f'const size_t {var}_len = {len(data)};')
+        out.append(f'const size_t {var}_len = {len(clean_data)};')
         out.append('')
 
     out.append('}  // namespace WebAssets')

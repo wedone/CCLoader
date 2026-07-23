@@ -6,7 +6,7 @@
 
 namespace WebAssets {
 
-// index.html (18396 bytes, text/html)
+// index.html (18038 bytes, text/html)
 const char index_html[] PROGMEM = R"=====(
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -368,9 +368,9 @@ curl -F "image=@.pio/build/nodemcuv2/firmware.bin" http://10.0.0.147/update</pre
 </html>
 
 )=====";
-const size_t index_html_len = 18396;
+const size_t index_html_len = 18038;
 
-// style.css (9164 bytes, text/css)
+// style.css (8778 bytes, text/css)
 const char style_css[] PROGMEM = R"=====(
 /* CCLoader WebUI - 暗色主题响应式样式 */
 
@@ -760,9 +760,9 @@ select:focus {
 .ota-preview .addr-warn { color: var(--warning); }
 
 )=====";
-const size_t style_css_len = 9164;
+const size_t style_css_len = 8778;
 
-// app.js (37119 bytes, application/javascript)
+// app.js (36115 bytes, application/javascript)
 const char app_js[] PROGMEM = R"=====(
 // CCLoader WebUI 前端逻辑
 // 使用 SSE (EventSource) 接收实时事件，无外部库依赖
@@ -1770,9 +1770,9 @@ function init() {
 init();
 
 )=====";
-const size_t app_js_len = 37119;
+const size_t app_js_len = 36115;
 
-// config.json (96 bytes, application/json)
+// config.json (90 bytes, application/json)
 const char config_json[] PROGMEM = R"=====(
 {
   "wifi_ssid": "",
@@ -1782,6 +1782,6 @@ const char config_json[] PROGMEM = R"=====(
 }
 
 )=====";
-const size_t config_json_len = 96;
+const size_t config_json_len = 90;
 
 }  // namespace WebAssets

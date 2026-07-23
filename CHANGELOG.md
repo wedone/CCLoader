@@ -24,6 +24,12 @@
 ### 修复
 - 烧录中启动监控前端提示不友好：409 `busy` 现映射为"设备忙（烧录中或监控中），
   请先停止当前操作"
+- **跨 tailscale 访问 WebUI 大响应截断**：HTML/CSS/JS 等静态资源经 tailscale (PMTU 1280)
+  转发时 IP 层分片丢包。新增 `sendChunked_P()` 分块发送（每块 1000 字节 + `TCP_NODELAY` +
+  可靠写入重试 + `Connection: close`），单 TCP 段 IP 包 < 1040 字节 < 1280，无需分片
+- **`gen_web_assets.py` 换行符导致 `sizeof` 与 `_len` 不匹配**：GCC 编译 raw string 时
+  把 `\r\n` 转为 `\n`，导致 `sizeof` 偏小、`Content-Length` 头与实际 body 不一致。
+  生成时统一去除 `\r`，`_len` 改用去 CR 后的字节数
 
 ### 版本号
 - 固件版本号 v1.1 → **v1.2**
