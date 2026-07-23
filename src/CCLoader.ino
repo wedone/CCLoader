@@ -402,6 +402,7 @@ unsigned long g_monitor_last_push = 0;
 String g_upload_filename;
 fs::File g_upload_file;
 bool g_upload_error = false;
+bool g_upload_rejected_hex = false;  // API 上传 .hex 时拒绝（浏览器端会自动 hex2bin，API 不会）
 
 // 配网模式标志：AP 模式下为 true，captive portal 启用
 bool g_in_config_mode = false;
@@ -613,6 +614,9 @@ bool switchToStaMode(const String& ssid, const String& pwd) {
     Serial.print("Connected, IP: ");
     Serial.println(WiFi.localIP());
     g_in_config_mode = false;
+    // 配网成功后启动 NTP 授时（北京时间 UTC+8）
+    configTime(8 * 3600, 0, "ntp.aliyun.com", "pool.ntp.org", "time.windows.com");
+    Serial.println("NTP configured (CST-8)");
     // 保存配置
     saveConfig(ssid, pwd, g_config.monitor_baud, g_config.verify);
     g_config.wifi_ssid = ssid;
@@ -949,6 +953,8 @@ void handleStatus() {
   json += "},\"uptime\":" + String(millis() / 1000);
   json += ",\"task_id\":" + String(g_burn_task_id);
   json += ",\"burn_pending\":" + String(g_burn_pending ? "true" : "false");
+  // 当前时间（epoch 秒，已授时为北京时间 CST-8；未授时返回 0）
+  json += ",\"time\":" + String((uint32_t)time(nullptr));
   json += "}";
   server.send(200, "application/json", json);
 }
@@ -995,6 +1001,16 @@ void handleUpload() {
     if (slash >= 0) filename = filename.substring(slash + 1);
     g_upload_filename = filename;
     g_upload_error = false;
+    g_upload_rejected_hex = false;
+    // API 上传不支持 .hex：浏览器端会自动 hex2bin，但 API（curl/Agent）不会
+    // 直接拒绝并返回提示，避免 AI 把 .hex 当 BIN 烧录导致 CC2530 异常
+    String lowerName = filename;
+    lowerName.toLowerCase();
+    if (lowerName.endsWith(".hex")) {
+      g_upload_rejected_hex = true;
+      Serial.printf("Upload rejected (.hex not supported via API): %s\n", filename.c_str());
+      return;  // 不打开文件
+    }
     // 删除同名旧文件
     if (LittleFS.exists("/" + filename)) {
       LittleFS.remove("/" + filename);
@@ -1005,6 +1021,8 @@ void handleUpload() {
     }
     Serial.printf("Upload start: %s\n", filename.c_str());
   } else if (upload.status == UPLOAD_FILE_WRITE) {
+    // .hex 被拒绝时跳过写入（multipart 数据仍会到达，但不落盘）
+    if (g_upload_rejected_hex) return;
     if (g_upload_file && !g_upload_error) {
       size_t written = g_upload_file.write(upload.buf, upload.currentSize);
       if (written != upload.currentSize) {
@@ -1014,6 +1032,21 @@ void handleUpload() {
   } else if (upload.status == UPLOAD_FILE_END) {
     if (g_upload_file) {
       g_upload_file.close();
+    }
+    // .hex 拒绝响应：返回 400 + hex2bin 提示（Agent 友好）
+    if (g_upload_rejected_hex) {
+      g_upload_rejected_hex = false;
+      String resp = "{\"error\":\"hex_not_supported\","
+                    "\"message\":\"API 不支持 .hex 直传，请先在客户端转换为 .bin 再上传\","
+                    "\"hint\":\"浏览器端上传 .hex 会自动 hex2bin；API 调用需自行转换。"
+                    "算法：1) 按 Intel HEX 解析每行(冒号开头)，取 count/addr/type/data/checksum；"
+                    "2) type=0x00 数据记录写入 baseAddr+bAddr；type=0x04 设置 baseAddr=data<<16；"
+                    "type=0x02 设置 baseAddr=data<<4；type=0x01 结束；校验和=(sum(除最后字节))&0xFF 应为0；"
+                    "3) 收集所有数据按地址排序，缺失地址填 0xFF；"
+                    "4) 尾部填充 0xFF 到 256KB(0x40000) 以适配 CC2530F256。"
+                    "可参考 data/app.js 中的 hex2bin() / parseHexToMap() / mapToBin() 实现。\"}";
+      server.send(400, "application/json", resp);
+      return;
     }
     Serial.printf("Upload end: %u bytes, error=%d\n", upload.totalSize, g_upload_error);
     if (g_upload_error) {
@@ -1343,6 +1376,14 @@ void setup() {
   loadConfig();
 
   initWiFi();
+
+  // NTP 网络授时（北京时间 UTC+8）
+  // LittleFS 创建文件时自动用 time(NULL) 作为时间戳，授时后 /api/files 的 time 字段不再为 0(1970)
+  // configTime 非阻塞，NTP 在后台同步（STA 模式下生效；AP 模式无网则保持未授时）
+  if (WiFi.status() == WL_CONNECTED) {
+    configTime(8 * 3600, 0, "ntp.aliyun.com", "pool.ntp.org", "time.windows.com");
+    Serial.println("NTP configured (CST-8), syncing in background...");
+  }
 
   initHttpRoutes();
   // OTA 升级：访问 http://<ip>/update 上传 .bin 即可远程升级固件
