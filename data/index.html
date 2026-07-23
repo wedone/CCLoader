@@ -163,7 +163,7 @@
 
       <div class="card">
         <h3>设备信息</h3>
-        <div>固件版本: CCLoader-WebUI v1.0</div>
+        <div>固件版本: CCLoader-WebUI v1.1</div>
         <div>运行时长: <span id="uptime">-</span></div>
         <div>WiFi 信号: <span id="rssi">-</span> dBm</div>
         <div>IP 地址: <span id="device-ip">-</span></div>
@@ -222,24 +222,26 @@
       <div class="card">
         <h3>API 用法（自动化调用）</h3>
         <div class="hint">无鉴权，局域网内任意设备可调用。完整流程：上传 BIN → 烧录 → 监控</div>
+        <div class="hint"><strong>注意：</strong>API 仅接受 <code>.bin</code> 文件，<code>.hex</code> 会被拒绝并返回 400 + hex2bin 提示。浏览器端上传 <code>.hex</code> 会自动转换，API 调用需自行转换（算法见响应 hint 字段）。</div>
         <pre class="code-block">#!/bin/bash
 IP=10.0.0.147
 BIN=DIYRuZRT_256k.bin
 
-# 1. 上传 BIN（multipart/form-data）
+# 1. 上传 BIN（multipart/form-data，仅 .bin；.hex 会被拒绝并返回 hex2bin 提示）
 curl -s -F "file=@${BIN}" http://${IP}/api/upload
 # 返回: {"success":true,"filename":"DIYRuZRT_256k.bin","size":262144}
 
-# 2. 异步烧录（立即返回，烧录在后台执行）
+# 2. 异步烧录（立即返回，烧录在后台执行，?async=1 兼容但非必需）
 curl -s -X POST "http://${IP}/api/burn?async=1" \
   -H "Content-Type: application/json" \
   -d '{"filename":"DIYRuZRT_256k.bin","verify":true}'
 # 返回: {"success":true,"async":true,"task_id":1,"total_blocks":512}
 
-# 3. 轮询状态（每 2 秒）
+# 3. 轮询状态（每 2 秒，含当前北京时间 epoch 字段 time）
 curl -s http://${IP}/api/status
 # 返回: {"state":"burning","task_id":1,"burn_pending":false,
-#        "burn":{"percent":50,"current_block":256,"total_blocks":512,...}}
+#        "burn":{"percent":50,"current_block":256,"total_blocks":512,...},
+#        "time":1729000000}
 
 # 4. 烧录完成后启动监控（自动复位 CC2530）
 curl -s -X POST http://${IP}/api/monitor \
@@ -252,7 +254,10 @@ curl -s "http://${IP}/api/monitor/buffer?since=0"
 #        "data":"<base64>","truncated":false}
 
 # 6. 停止监控
-curl -s -X POST http://${IP}/api/stop</pre>
+curl -s -X POST http://${IP}/api/stop
+
+# 7. 可选：烧录完成后重启烧录器（释放内存 / 重新初始化 CC2530）
+curl -s -X POST http://${IP}/api/reboot</pre>
       </div>
 
       <div class="card">
@@ -262,11 +267,13 @@ curl -s -X POST http://${IP}/api/stop</pre>
             <tr><th>方法</th><th>路径</th><th>功能</th></tr>
           </thead>
           <tbody>
-            <tr><td>GET</td><td>/api/status</td><td>当前状态（state/burn/monitor/task_id）</td></tr>
-            <tr><td>GET</td><td>/api/files</td><td>列出已上传 BIN</td></tr>
-            <tr><td>POST</td><td>/api/upload</td><td>上传 BIN（multipart, 字段 file）</td></tr>
-            <tr><td>POST</td><td>/api/burn?async=1</td><td>异步烧录（返回 task_id，推荐）</td></tr>
-            <tr><td>POST</td><td>/api/burn</td><td>同步烧录（阻塞至完成）</td></tr>
+            <tr><td>GET</td><td>/api/status</td><td>当前状态（state/burn/monitor/task_id/time）</td></tr>
+            <tr><td>GET</td><td>/api/config</td><td>读取配置（ssid/baud/verify）</td></tr>
+            <tr><td>POST</td><td>/api/config</td><td>更新配置（body: JSON）</td></tr>
+            <tr><td>GET</td><td>/api/files</td><td>列出已上传 BIN（含 size/time）</td></tr>
+            <tr><td>POST</td><td>/api/upload</td><td>上传 BIN（multipart, 字段 file）。<strong>.hex 会被拒绝</strong>，返回 400 + hex2bin 提示</td></tr>
+            <tr><td>DELETE</td><td>/api/files/{name}</td><td>删除指定 BIN</td></tr>
+            <tr><td>POST</td><td>/api/burn?async=1</td><td>烧录（强制异步，立即返回 task_id。?async=1 兼容但非必需）</td></tr>
             <tr><td>POST</td><td>/api/monitor</td><td>开始监控（body: {baud,auto_reset}）</td></tr>
             <tr><td>GET</td><td>/api/monitor/buffer?since=N</td><td>获取日志（断点续传）</td></tr>
             <tr><td>POST</td><td>/api/stop</td><td>停止监控</td></tr>
@@ -288,8 +295,10 @@ curl -s -X POST http://${IP}/api/stop</pre>
 # {"type":"burn_progress","percent":50,"current_block":256,...}
 # {"type":"monitor_start","baud":115200}
 # {"type":"monitor_data","data":"<base64>"}
-# {"type":"monitor_reset"}
-# {"type":"monitor_stop"}</pre>
+# {"type":"monitor_reset"}        # CC2530 已复位（监控中），前端清空日志区
+# {"type":"monitor_stop"}
+# {"type":"wifi_connected","ssid":"...","ip":"192.168.x.x"}
+# {"type":"wifi_connect_failed","ssid":"..."}</pre>
       </div>
 
       <div class="card">
@@ -327,6 +336,18 @@ curl -F "image=@.pio/build/nodemcuv2/firmware.bin" http://10.0.0.147/update</pre
         <div class="faq-item">
           <div class="faq-q">Q: 忘了 WiFi 密码或连不上？</div>
           <div class="faq-a">A: 在"设置"页重新扫描+连接。若 WebUI 都进不去，删除 LittleFS 中的 /config.json 或重新烧录固件可重置。</div>
+        </div>
+        <div class="faq-item">
+          <div class="faq-q">Q: 文件列表时间显示 1970 年？</div>
+          <div class="faq-a">A: NTP 未同步。固件启动后通过 NTP 自动校准北京时间（UTC+8），通常连接 WiFi 后几秒内完成；AP 配网模式下无网络无法授时，连上 WiFi 后会自动同步。新上传的文件会带正确时间戳。</div>
+        </div>
+        <div class="faq-item">
+          <div class="faq-q">Q: API 上传 .hex 报错 hex_not_supported？</div>
+          <div class="faq-a">A: API（curl/Agent）仅接受 .bin，浏览器端上传 .hex 会自动转换但 API 不会。响应 hint 字段含完整 hex2bin 算法（Intel HEX 解析 + 256KB 填充），可参考实现。</div>
+        </div>
+        <div class="faq-item">
+          <div class="faq-q">Q: "烧录完成重启烧录器"勾选项有什么用？</div>
+          <div class="faq-a">A: 烧录成功后自动调用 /api/reboot 重启 ESP8266，可释放内存、重新初始化 GPIO 状态，适合连续多次烧录或烧录后立即监控的场景。</div>
         </div>
       </div>
     </section>
