@@ -303,6 +303,22 @@ select:focus {
   line-height: 1.5;
   white-space: pre;
 }
+
+/* 帮助页 markdown 容器：复用 code-block 风格，自动换行避免横向滚动 */
+.help-md {
+  background: #000;
+  color: #d4d4d4;
+  font-family: Consolas, Monaco, "Courier New", monospace;
+  font-size: 12px;
+  padding: 12px;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin: 12px 0;
+  border: 1px solid var(--border);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .code-block code { color: #569cd6; }
 
 .step-list {

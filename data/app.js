@@ -992,11 +992,23 @@ async function pollStatus() {
   } catch (e) {}
 }
 
+// ===== 帮助页：从 /api/help 加载 markdown 文本（与 AI Agent 共用同一份内容） =====
+async function loadHelp() {
+  try {
+    const resp = await fetch('/api/help');
+    const text = await resp.text();
+    $('help-content').textContent = text;
+  } catch (e) {
+    $('help-content').textContent = '加载失败: ' + e.message;
+  }
+}
+
 // ===== 初始化 =====
 function init() {
   connectSSE();
   refreshFileList();
   loadConfig();
+  loadHelp();
   pollStatus();
   setInterval(pollStatus, 3000);
 }
