@@ -6,7 +6,7 @@
 
 namespace WebAssets {
 
-// index.html (7776 bytes, text/html)
+// index.html (7860 bytes, text/html)
 const char index_html[] PROGMEM = R"=====(
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -79,7 +79,8 @@ const char index_html[] PROGMEM = R"=====(
         <h3>烧录</h3>
         <div>选中: <span id="selected-file">未选择</span></div>
         <label><input type="checkbox" id="verify-check"> 烧录后校验</label>
-        <label><input type="checkbox" id="reboot-burner-check"> 烧录完成重启烧录器</label>
+        <label><input type="checkbox" id="reset-after-check"> 烧录后复位</label>
+        <label><input type="checkbox" id="reboot-burner-check"> 烧录后重启烧录器</label>
         <button id="burn-btn" class="btn primary">开始烧录</button>
 
         <div class="progress-container">
@@ -198,7 +199,7 @@ const char index_html[] PROGMEM = R"=====(
 </html>
 
 )=====";
-const size_t index_html_len = 7776;
+const size_t index_html_len = 7860;
 
 // style.css (9585 bytes, text/css)
 const char style_css[] PROGMEM = R"=====(
@@ -608,7 +609,7 @@ select:focus {
 )=====";
 const size_t style_css_len = 9585;
 
-// app.js (37495 bytes, application/javascript)
+// app.js (38267 bytes, application/javascript)
 const char app_js[] PROGMEM = R"=====(
 // CCLoader WebUI 前端逻辑
 // 使用 SSE (EventSource) 接收实时事件，无外部库依赖
@@ -1206,17 +1207,21 @@ $('burn-btn').addEventListener('click', async () => {
     return;
   }
   const verify = $('verify-check').checked;
+  const reset_after = $('reset-after-check').checked;
   $('burn-btn').disabled = true;
   $('burn-log').innerHTML = '';
   $('burn-progress-bar').style.width = '0%';
   $('burn-progress-text').textContent = '0%';
-  appendLog($('burn-log'), '开始烧录: ' + selectedFile + (verify ? ' (校验)' : ''), 'success');
+  const tags = [];
+  if (verify) tags.push('校验');
+  if (reset_after) tags.push('复位');
+  appendLog($('burn-log'), '开始烧录: ' + selectedFile + (tags.length ? ' (' + tags.join('+') + ')' : ''), 'success');
 
   try {
     const resp = await fetch('/api/burn', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename: selectedFile, verify: verify })
+      body: JSON.stringify({ filename: selectedFile, verify: verify, reset_after: reset_after })
     });
     const result = await resp.json();
     if (!result.success) {
@@ -1244,10 +1249,22 @@ function updateBurnProgress(msg) {
     appendLog($('burn-log'), '烧录完成', 'success');
     $('burn-btn').disabled = false;
     // 烧录完成后不再自动跳到监控页，由用户手动切换
-    // 勾选"烧录完成重启烧录器"时调用 /api/reboot 重启 ESP8266
-    if ($('reboot-burner-check').checked) {
-      appendLog($('burn-log'), '正在重启烧录器...', 'success');
-      fetch('/api/reboot', { method: 'POST' }).catch(() => {});
+    // 勾选"烧录后复位"时通过 GPIO5/RESETn 复位 CC2530
+    // 勾选"烧录后重启烧录器"时延时 3 秒后调用 /api/reboot 重启 ESP8266
+    const doReboot = () => {
+      appendLog($('burn-log'), '3 秒后重启烧录器...', 'success');
+      setTimeout(() => {
+        appendLog($('burn-log'), '正在重启烧录器...', 'success');
+        fetch('/api/reboot', { method: 'POST' }).catch(() => {});
+      }, 3000);
+    };
+    if ($('reset-after-check').checked) {
+      appendLog($('burn-log'), '复位 CC2530...', 'success');
+      fetch('/api/reset', { method: 'POST' })
+        .then(() => { if ($('reboot-burner-check').checked) doReboot(); })
+        .catch(() => { if ($('reboot-burner-check').checked) doReboot(); });
+    } else if ($('reboot-burner-check').checked) {
+      doReboot();
     }
   }
 }
@@ -1628,7 +1645,7 @@ function init() {
 init();
 
 )=====";
-const size_t app_js_len = 37495;
+const size_t app_js_len = 38267;
 
 // config.json (90 bytes, application/json)
 const char config_json[] PROGMEM = R"=====(
@@ -1642,7 +1659,7 @@ const char config_json[] PROGMEM = R"=====(
 )=====";
 const size_t config_json_len = 90;
 
-// help.md (12161 bytes, text/plain)
+// help.md (12563 bytes, text/markdown; charset=utf-8)
 const char help_md[] PROGMEM = R"=====(
 # CCLoader WebUI 帮助
 
@@ -1926,10 +1943,13 @@ A: API（curl/Agent）仅接受 .bin，浏览器端上传 .hex 会自动转换�
 **Q: 烧录时 verify 参数不生效？**
 A: API 烧录强制开启校验（verify=true），`verify` 参数被忽略。这是为了保证烧录正确性，避免 AI 跳过校验导致 CC2530 异常。校验失败会在 `burn.error` 字段报出。
 
-**Q: "烧录完成重启烧录器"勾选项有什么用？**
-A: 烧录成功后自动调用 /api/reboot 重启 ESP8266，可释放内存、重新初始化 GPIO 状态，适合连续多次烧录或烧录后立即监控的场景。
+**Q: "烧录后重启烧录器"勾选项有什么用？**
+A: 烧录成功后延时 3 秒自动调用 /api/reboot 重启 ESP8266，可释放内存、重新初始化 GPIO 状态，适合连续多次烧录或烧录后立即监控的场景。若同时勾选"烧录后复位"，会先复位 CC2530 再延时重启。
+
+**Q: "烧录后复位"勾选项有什么用？**
+A: 烧录成功后通过 GPIO5/RESETn 复位 CC2530，让芯片从 main() 重新启动。适合烧录后立即观察启动日志或确认固件正常运行。注意：burnFromLittleFS 内部末尾的 RunDUP() 已经复位过一次，此选项是额外的显式复位。
 
 )=====";
-const size_t help_md_len = 12161;
+const size_t help_md_len = 12563;
 
 }  // namespace WebAssets
