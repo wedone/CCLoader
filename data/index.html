@@ -68,10 +68,12 @@
       <div class="card">
         <h3>烧录</h3>
         <div>选中: <span id="selected-file">未选择</span></div>
-        <label><input type="checkbox" id="verify-check"> 烧录后校验</label>
-        <label><input type="checkbox" id="reset-after-check"> 烧录后复位</label>
         <label><input type="checkbox" id="reboot-burner-check"> 烧录后重启烧录器</label>
-        <button id="burn-btn" class="btn primary">开始烧录</button>
+        <div class="toolbar">
+          <button id="burn-btn" class="btn primary">开始烧录</button>
+          <button id="backup-btn" class="btn">备份固件</button>
+          <button id="nvreset-btn" class="btn danger">清除配网</button>
+        </div>
 
         <div class="progress-container">
           <div class="progress-bar">
@@ -157,14 +159,8 @@
       </div>
 
       <div class="card">
-        <h3>默认烧录</h3>
-        <label><input type="checkbox" id="default-verify-check"> 烧录后校验</label>
-        <button id="save-burn-btn" class="btn primary">保存</button>
-      </div>
-
-      <div class="card">
         <h3>设备信息</h3>
-        <div>固件版本: CCLoader-WebUI v1.2</div>
+        <div>固件版本: CCLoader-WebUI v1.3</div>
         <div>运行时长: <span id="uptime">-</span></div>
         <div>WiFi 信号: <span id="rssi">-</span> dBm</div>
         <div>IP 地址: <span id="device-ip">-</span></div>
@@ -179,7 +175,7 @@
         <div class="hint">本页内容由 <code>/api/help</code> 返回，AI Agent 调用同一接口获取。修改 <code>data/help.md</code> 后重新生成 <code>web_assets.h</code> 即可同步更新。</div>
       </div>
       <div class="card">
-        <pre id="help-content" class="help-md">加载中...</pre>
+        <div id="help-content" class="help-md">加载中...</div>
       </div>
     </section>
   </main>

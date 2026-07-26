@@ -12,6 +12,35 @@
 
 ## [Unreleased]
 
+---
+
+## [1.3] - 2026-07-26
+
+### 新增
+- **清除 CC2530 配网信息**：`POST /api/nvreset` 读取 Flash → 清除尾部 4KB
+  NV 区域 → 全片擦除 → 写回，保留固件仅清除 Zigbee 配网。WebUI 烧录区新增
+  红色"清除配网"按钮，约 2 分钟完成
+- **备份 CC2530 固件**：`POST /api/backup` 读取 CC2530 全部 Flash（256KB）保存
+  到 LittleFS，生成 `backup_YYYYMMDD_HHMMSS.bin` 文件，可在文件列表中下载。
+  WebUI 烧录区新增"备份固件"按钮，约 1 分钟完成
+- `BurnState` 结构新增 `info` 字段，SSE 推送操作结果信息（如备份文件名）
+- 帮助页 FAQ 新增"清除配网"和"备份固件"说明
+
+### 变更
+- **移除两个无效复选框**：烧录后校验（后端强制 verify=true，选项被忽略）、
+  烧录后复位（`burnFromLittleFS` 末尾已 `RunDUP()` 复位过，选项冗余）
+- **帮助页渲染升级**：从纯文本 `<pre>` 改为零依赖的轻量 markdown HTML
+  渲染（约 80 行 `renderMarkdown()`），支持标题、代码块、表格、列表、链接等
+- 烧录完成日志由"烧录完成"改为通用的"操作完成"（适配备份/清除配网场景）
+- 备份完成后自动刷新文件列表，新文件立即可见
+
+### 版本号
+- 固件版本号 v1.2 → **v1.3**
+
+---
+
+## [1.2] - 2026-07-23
+
 ### 变更
 - **监控模块通用化**：`resetCC2530()` 移除调试专用的 DD/DC 拉低操作，只操作 RESETn 一根线
   （拉低 DD/DC 会让 CC Debug 接口进入非标准电平，对运行中的应用固件有干扰）
@@ -92,6 +121,8 @@
 
 ---
 
-[Unreleased]: https://github.com/wedone/CCLoader/compare/v1.1...HEAD
+[Unreleased]: https://github.com/wedone/CCLoader/compare/v1.3...HEAD
+[1.3]: https://github.com/wedone/CCLoader/compare/v1.2...v1.3
+[1.2]: https://github.com/wedone/CCLoader/compare/v1.1...v1.2
 [1.1]: https://github.com/wedone/CCLoader/compare/v1.0...v1.1
 [1.0]: https://github.com/wedone/CCLoader/releases/tag/v1.0

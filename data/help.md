@@ -40,8 +40,10 @@ CC2530 的 3.3V 可从 NodeMCU 的 3V3 引脚取，电流 < 50mA。
 ### 2.1 关键规则
 
 - **API 仅接受 `.bin`**：上传 `.hex` 会被拒绝并返回 400 + `hex_not_supported` 错误。浏览器端上传 `.hex` 会自动转换，API 调用需自行转换（算法见下方 2.3 节）。
-- **烧录强制校验**：`/api/burn` 的 `verify` 参数被忽略，固件内部强制 `verify=true`，保证烧录正确性。烧录失败会通过 SSE `burn_progress.error` 和 `/api/status` 的 `burn.error` 字段报出。
+- **烧录强制校验**：固件内部强制开启校验，烧录后自动回读验证，保证烧录正确性。烧录失败会通过 SSE `burn_progress.error` 和 `/api/status` 的 `burn.error` 字段报出。
 - **烧录强制异步**：`/api/burn` 立即返回 `task_id`，烧录在后台执行。`?async=1` 参数兼容但非必需。通过轮询 `/api/status` 跟踪进度。
+- **清除配网**：`POST /api/nvreset` 读取 Flash → 清除 NV → 全片擦除 → 写回，保留固件仅清除配网信息。异步执行，进度通过 SSE 和进度条显示。
+- **备份固件**：`POST /api/backup` 读取 CC2530 全部 Flash 保存到 LittleFS，生成 `backup_YYYYMMDD_HHMMSS.bin` 文件，可在文件列表中下载。异步执行，进度通过 SSE 显示。
 - **NTP 授时**：WiFi 连接后自动同步北京时间（UTC+8），`/api/status` 的 `time` 字段为当前 epoch 秒；未授时返回 0。
 
 ### 2.2 完整流程示例
@@ -55,7 +57,7 @@ BIN=DIYRuZRT_256k.bin
 curl -s -F "file=@${BIN}" http://${IP}/api/upload
 # 返回: {"success":true,"filename":"DIYRuZRT_256k.bin","size":262144}
 
-# 2. 发起烧录（强制异步 + 强制校验，verify 参数无效）
+# 2. 发起烧录（强制异步 + 强制校验）
 curl -s -X POST "http://${IP}/api/burn" \
   -H "Content-Type: application/json" \
   -d '{"filename":"DIYRuZRT_256k.bin"}'
@@ -185,6 +187,8 @@ hex2bin('CC2530.hex', 'CC2530.bin')
 | POST | /api/upload | 上传 BIN（multipart, 字段 file）。**.hex 会被拒绝**，返回 400 + hex2bin 提示 |
 | DELETE | /api/files/{name} | 删除指定 BIN |
 | POST | /api/burn | 烧录（强制异步 + 强制校验，立即返回 task_id） |
+| POST | /api/nvreset | 清除配网（读取 Flash → 清除 NV → 写回，保留固件） |
+| POST | /api/backup | 备份固件（读取 Flash 保存到 LittleFS，生成 .bin 文件） |
 | POST | /api/monitor | 开始监控（body: {baud,auto_reset}） |
 | GET  | /api/monitor/buffer?since=N | 获取日志（断点续传） |
 | POST | /api/stop | 停止监控 |
@@ -277,11 +281,8 @@ A: NTP 未同步。固件启动后通过 NTP 自动校准北京时间（UTC+8）
 **Q: API 上传 .hex 报错 hex_not_supported？**
 A: API（curl/Agent）仅接受 .bin，浏览器端上传 .hex 会自动转换但 API 不会。参考 2.3 节的 hex2bin 算法和 Python 实现，转换后再上传。
 
-**Q: 烧录时 verify 参数不生效？**
-A: API 烧录强制开启校验（verify=true），`verify` 参数被忽略。这是为了保证烧录正确性，避免 AI 跳过校验导致 CC2530 异常。校验失败会在 `burn.error` 字段报出。
-
 **Q: "烧录后重启烧录器"勾选项有什么用？**
-A: 烧录成功后延时 3 秒自动调用 /api/reboot 重启 ESP8266，可释放内存、重新初始化 GPIO 状态，适合连续多次烧录或烧录后立即监控的场景。若同时勾选"烧录后复位"，会先复位 CC2530 再延时重启。
+A: 烧录成功后延时 3 秒自动调用 /api/reboot 重启 ESP8266，可释放内存、重新初始化 GPIO 状态，适合连续多次烧录或烧录后立即监控的场景。
 
-**Q: "烧录后复位"勾选项有什么用？**
-A: 烧录成功后通过 GPIO5/RESETn 复位 CC2530，让芯片从 main() 重新启动。适合烧录后立即观察启动日志或确认固件正常运行。注意：burnFromLittleFS 内部末尾的 RunDUP() 已经复位过一次，此选项是额外的显式复位。
+**Q: 如何清除 CC2530 的 Zigbee 配网信息（不擦除固件）？**
+A: 在 WebUI 烧录区点击"清除配网"按钮，或直接调用 `POST /api/nvreset`。流程：读取 CC2530 全部 Flash 到临时文件 → 清除尾部 NV 区域（最后 4KB）→ 全片擦除 → 写回。固件保留，仅清除配网信息，设备需要重新加入 Zigbee 网络。整个过程约 2 分钟，进度通过进度条显示。

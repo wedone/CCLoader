@@ -386,6 +386,7 @@ struct BurnState {
   uint32_t current_block;
   uint8_t percent;
   String error;
+  String info;
   bool done;
 };
 BurnState g_burn;
@@ -412,6 +413,12 @@ bool g_burn_pending = false;
 String g_burn_pending_filename;
 bool g_burn_pending_verify = false;
 uint32_t g_burn_task_id = 0;  // 单调递增的 task_id
+
+// 清除配网：POST /api/nvreset 立即返回，在 loop() 中执行
+bool g_nvreset_pending = false;
+
+// 备份固件：POST /api/backup 立即返回，在 loop() 中执行
+bool g_backup_pending = false;
 
 // 监控日志环形缓冲：支持 Agent 轮询 GET /api/monitor/buffer?since=N
 // 缓存最近 8KB 日志，Agent 可断点续传获取
@@ -709,6 +716,7 @@ void pushBurnProgress() {
   json += ",\"total_blocks\":" + String(g_burn.total_blocks);
   json += ",\"done\":" + String(g_burn.done ? "true" : "false");
   json += ",\"error\":\"" + jsonEscape(g_burn.error) + "\"";
+  json += ",\"info\":\"" + jsonEscape(g_burn.info) + "\"";
   json += "}";
   sseSend(json);
 }
@@ -827,6 +835,189 @@ void burnFromLittleFS(const String& filename, bool verify) {
   RunDUP();
   g_burn.done = true;
   pushBurnProgress();
+}
+
+// ===== 清除 CC2530 配网信息（保留固件，仅擦除 NV 区域） =====
+// 流程：读取整个 Flash → 清除尾部 NV 区域 → 全片擦除 → 写回
+// 本质上是"读-改-写"：读回固件，清掉配网数据，再重新烧录
+void nvResetCC2530() {
+  const char* tmpFile = "/nv_reset.bin";
+  const uint32_t flashSize = 256 * 1024;   // 256KB (CC2530F256)
+  const uint32_t blockSize = 512;
+  const uint32_t nvClearBytes = 4 * 1024;   // 4KB (NV 区域)
+  const uint32_t totalBlocks = flashSize / blockSize;
+
+  g_burn.total_blocks = totalBlocks;
+  g_burn.current_block = 0;
+  g_burn.percent = 0;
+  g_burn.done = false;
+  g_burn.error = "";
+
+  // 删除上次残留的临时文件
+  if (LittleFS.exists(tmpFile)) LittleFS.remove(tmpFile);
+
+  // Phase 1: 读取 CC2530 全部 Flash 到 LittleFS 临时文件
+  fs::File f = LittleFS.open(tmpFile, "w");
+  if (!f) {
+    g_burn.error = "cannot create temp file";
+    g_burn.done = true;
+    pushBurnProgress();
+    return;
+  }
+
+  // 进入 debug 模式
+  digitalWrite(LED, HIGH);
+  debug_init();
+  if (read_chip_id() == 0) {
+    g_burn.error = "chip not detected";
+    g_burn.done = true;
+    pushBurnProgress();
+    f.close();
+    LittleFS.remove(tmpFile);
+    digitalWrite(LED, LOW);
+    return;
+  }
+  RunDUP();
+  debug_init();
+
+  // 逐块读取 Flash
+  uint8_t buf[512];
+  for (uint32_t i = 0; i < totalBlocks; i++) {
+    uint32_t addr = i * 128;
+    uint8_t bank = addr / (512 * 16);
+    uint16_t offset = (addr % (512 * 16)) * 4;
+    read_flash_memory_block(bank, offset, 512, buf);
+    f.write(buf, 512);
+
+    g_burn.current_block = i + 1;
+    g_burn.percent = (i + 1) * 50 / totalBlocks;  // 读取阶段占 0-50%
+    if (i % 16 == 0 || i == totalBlocks - 1) {
+      pushBurnProgress();
+      sseLoop();
+      server.handleClient();
+      yield();
+    }
+  }
+  f.close();
+
+  // Phase 2: 清除 NV 区域（最后 4KB 填充 0xFF）
+  f = LittleFS.open(tmpFile, "r+");
+  if (!f) {
+    g_burn.error = "cannot modify temp file";
+    g_burn.done = true;
+    pushBurnProgress();
+    LittleFS.remove(tmpFile);
+    digitalWrite(LED, LOW);
+    return;
+  }
+  uint32_t nvOffset = flashSize - nvClearBytes;
+  if (!f.seek(nvOffset)) {
+    g_burn.error = "seek failed";
+    g_burn.done = true;
+    pushBurnProgress();
+    f.close();
+    LittleFS.remove(tmpFile);
+    digitalWrite(LED, LOW);
+    return;
+  }
+  uint8_t ff[512];
+  memset(ff, 0xFF, 512);
+  for (uint32_t i = 0; i < nvClearBytes / blockSize; i++) {
+    f.write(ff, 512);
+  }
+  f.close();
+
+  // Phase 3: 烧录回 CC2530（全片擦除 + 写入 + 校验 + RunDUP）
+  // burnFromLittleFS 内部会重新 debug_init、chip_erase、写回、RunDUP
+  // 进度从 0-100% 显示，与读取阶段连贯
+  g_burn.percent = 50;
+  pushBurnProgress();
+  burnFromLittleFS(tmpFile, true);
+
+  // 清理临时文件
+  LittleFS.remove(tmpFile);
+  digitalWrite(LED, LOW);
+}
+
+// ===== 备份 CC2530 固件：读取 Flash 保存到 LittleFS =====
+// 生成带时间戳的文件名 backup_YYYYMMDD_HHMMSS.bin
+// 完成后出现在文件列表中，可下载到本地
+void backupCC2530() {
+  const uint32_t flashSize = 256 * 1024;
+  const uint32_t blockSize = 512;
+  const uint32_t totalBlocks = flashSize / blockSize;
+
+  // 生成时间戳文件名
+  time_t now = time(nullptr);
+  struct tm* t = localtime(&now);
+  char filename[64];
+  if (t->tm_year > 70) {
+    snprintf(filename, sizeof(filename), "backup_%04d%02d%02d_%02d%02d%02d.bin",
+             t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
+             t->tm_hour, t->tm_min, t->tm_sec);
+  } else {
+    // NTP 未授时，用毫秒时间戳避免重名
+    snprintf(filename, sizeof(filename), "backup_%lu.bin", (unsigned long)millis());
+  }
+
+  g_burn.total_blocks = totalBlocks;
+  g_burn.current_block = 0;
+  g_burn.percent = 0;
+  g_burn.done = false;
+  g_burn.error = "";
+
+  // 进入 debug 模式
+  digitalWrite(LED, HIGH);
+  debug_init();
+  if (read_chip_id() == 0) {
+    g_burn.error = "chip not detected";
+    g_burn.done = true;
+    pushBurnProgress();
+    digitalWrite(LED, LOW);
+    return;
+  }
+  RunDUP();
+  debug_init();
+
+  // 创建输出文件
+  fs::File f = LittleFS.open("/" + String(filename), "w");
+  if (!f) {
+    g_burn.error = "cannot create file";
+    g_burn.done = true;
+    pushBurnProgress();
+    digitalWrite(LED, LOW);
+    return;
+  }
+
+  // 逐块读取 Flash 并写入文件
+  uint8_t buf[512];
+  uint32_t lastPercent = 0;
+  for (uint32_t i = 0; i < totalBlocks; i++) {
+    uint32_t addr = i * 128;
+    uint8_t bank = addr / (512 * 16);
+    uint16_t offset = (addr % (512 * 16)) * 4;
+    read_flash_memory_block(bank, offset, 512, buf);
+    f.write(buf, 512);
+
+    g_burn.current_block = i + 1;
+    g_burn.percent = (i + 1) * 100 / totalBlocks;
+    if (g_burn.percent != lastPercent) {
+      lastPercent = g_burn.percent;
+      pushBurnProgress();
+      sseLoop();
+      server.handleClient();
+      yield();
+    }
+  }
+  f.close();
+  RunDUP();
+
+  g_burn.done = true;
+  g_burn.error = "";
+  g_burn.info = "备份完成: " + String(filename);
+  pushBurnProgress();
+  Serial.printf("Backup saved: %s (%u bytes)\n", filename, flashSize);
+  digitalWrite(LED, LOW);
 }
 
 // ===== CC2530 复位（通过 GPIO5/RESETn 控制，无需手动按按钮）=====
@@ -1136,6 +1327,26 @@ void handleBurn() {
                 g_burn_task_id, filename.c_str(), verify, totalBlocks);
 }
 
+void handleNvReset() {
+  if (g_state != STATE_IDLE || g_burn_pending || g_nvreset_pending) {
+    server.send(409, "application/json", "{\"error\":\"busy\"}");
+    return;
+  }
+  g_nvreset_pending = true;
+  server.send(202, "application/json", "{\"success\":true,\"async\":true,\"info\":\"清除配网：读取 Flash → 清除 NV → 写回\"}");
+  Serial.println("NV reset queued");
+}
+
+void handleBackup() {
+  if (g_state != STATE_IDLE || g_burn_pending || g_nvreset_pending || g_backup_pending) {
+    server.send(409, "application/json", "{\"error\":\"busy\"}");
+    return;
+  }
+  g_backup_pending = true;
+  server.send(202, "application/json", "{\"success\":true,\"async\":true,\"info\":\"备份固件：读取 Flash 保存到 LittleFS\"}");
+  Serial.println("Backup queued");
+}
+
 void handleMonitor() {
   if (g_state != STATE_IDLE) {
     server.send(409, "application/json", "{\"error\":\"busy\"}");
@@ -1376,6 +1587,8 @@ void initHttpRoutes() {
   server.on("/api/config", HTTP_POST, handlePostConfig);
   server.on("/api/upload", HTTP_POST, [](){ /* 响应在 handleUpload END 阶段发 */ }, handleUpload);
   server.on("/api/burn", HTTP_POST, handleBurn);
+  server.on("/api/nvreset", HTTP_POST, handleNvReset);
+  server.on("/api/backup", HTTP_POST, handleBackup);
   server.on("/api/monitor", HTTP_POST, handleMonitor);
   server.on("/api/stop", HTTP_POST, handleStop);
   server.on("/api/reset", HTTP_POST, handleResetCC2530);
@@ -1453,6 +1666,25 @@ void setup() {
 }
 
 void loop() {
+  // 备份固件：检测到 pending 标志后在 loop 中执行
+  if (g_backup_pending && g_state == STATE_IDLE) {
+    g_backup_pending = false;
+    g_state = STATE_BURNING;
+    g_burn.info = "";
+    Serial.println("Starting backup...");
+    backupCC2530();
+    g_state = STATE_IDLE;
+  }
+
+  // 清除配网：检测到 pending 标志后在 loop 中执行
+  if (g_nvreset_pending && g_state == STATE_IDLE) {
+    g_nvreset_pending = false;
+    g_state = STATE_BURNING;
+    Serial.println("Starting NV reset...");
+    nvResetCC2530();
+    g_state = STATE_IDLE;
+  }
+
   // 异步烧录：检测到 pending 标志后在 loop 中执行
   // burnFromLittleFS 内部会周期性调用 server.handleClient() 保持 HTTP 可响应
   if (g_burn_pending && g_state == STATE_IDLE) {

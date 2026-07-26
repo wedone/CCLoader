@@ -593,22 +593,17 @@ $('burn-btn').addEventListener('click', async () => {
     alert('请先选择固件');
     return;
   }
-  const verify = $('verify-check').checked;
-  const reset_after = $('reset-after-check').checked;
   $('burn-btn').disabled = true;
   $('burn-log').innerHTML = '';
   $('burn-progress-bar').style.width = '0%';
   $('burn-progress-text').textContent = '0%';
-  const tags = [];
-  if (verify) tags.push('校验');
-  if (reset_after) tags.push('复位');
-  appendLog($('burn-log'), '开始烧录: ' + selectedFile + (tags.length ? ' (' + tags.join('+') + ')' : ''), 'success');
+  appendLog($('burn-log'), '开始烧录: ' + selectedFile, 'success');
 
   try {
     const resp = await fetch('/api/burn', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename: selectedFile, verify: verify, reset_after: reset_after })
+      body: JSON.stringify({ filename: selectedFile })
     });
     const result = await resp.json();
     if (!result.success) {
@@ -623,35 +618,77 @@ $('burn-btn').addEventListener('click', async () => {
   }
 });
 
+$('nvreset-btn').addEventListener('click', async () => {
+  if (!confirm('确定清除 CC2530 的配网信息？\n\n固件不会被擦除，但设备需要重新加入 Zigbee 网络。\n此操作不可撤销！')) return;
+  $('nvreset-btn').disabled = true;
+  $('burn-btn').disabled = true;
+  $('burn-log').innerHTML = '';
+  $('burn-progress-bar').style.width = '0%';
+  $('burn-progress-text').textContent = '0%';
+  appendLog($('burn-log'), '开始清除配网：读取 Flash → 清除 NV → 写回', 'success');
+  try {
+    const resp = await fetch('/api/nvreset', { method: 'POST' });
+    const result = await resp.json();
+    if (!result.success) {
+      appendLog($('burn-log'), '启动失败: ' + result.error, 'error');
+      $('nvreset-btn').disabled = false;
+      $('burn-btn').disabled = false;
+    }
+  } catch (e) {
+    appendLog($('burn-log'), '请求失败: ' + e.message, 'error');
+    $('nvreset-btn').disabled = false;
+    $('burn-btn').disabled = false;
+  }
+});
+
+$('backup-btn').addEventListener('click', async () => {
+  if (!confirm('确定备份 CC2530 固件？\n\n读取 Flash 保存到烧录器，约 1 分钟。\n完成后可通过文件列表下载到本地。')) return;
+  $('backup-btn').disabled = true;
+  $('burn-btn').disabled = true;
+  $('burn-log').innerHTML = '';
+  $('burn-progress-bar').style.width = '0%';
+  $('burn-progress-text').textContent = '0%';
+  appendLog($('burn-log'), '开始备份固件：读取 Flash 保存到 LittleFS...', 'success');
+  try {
+    const resp = await fetch('/api/backup', { method: 'POST' });
+    const result = await resp.json();
+    if (!result.success) {
+      appendLog($('burn-log'), '启动失败: ' + result.error, 'error');
+      $('backup-btn').disabled = false;
+      $('burn-btn').disabled = false;
+    }
+  } catch (e) {
+    appendLog($('burn-log'), '请求失败: ' + e.message, 'error');
+    $('backup-btn').disabled = false;
+    $('burn-btn').disabled = false;
+  }
+});
+
 function updateBurnProgress(msg) {
   $('burn-progress-bar').style.width = msg.percent + '%';
   $('burn-progress-text').textContent = msg.percent + '% (' + msg.current_block + '/' + msg.total_blocks + ')';
   if (msg.current_block > 0 && msg.current_block % 50 === 0 && msg.current_block < msg.total_blocks) {
-    appendLog($('burn-log'), '写入块 ' + msg.current_block + '/' + msg.total_blocks);
+    appendLog($('burn-log'), '处理块 ' + msg.current_block + '/' + msg.total_blocks);
   }
   if (msg.error) {
     appendLog($('burn-log'), '错误: ' + msg.error, 'error');
   }
+  if (msg.info) {
+    appendLog($('burn-log'), msg.info, 'success');
+  }
   if (msg.done) {
-    appendLog($('burn-log'), '烧录完成', 'success');
+    appendLog($('burn-log'), '操作完成', 'success');
     $('burn-btn').disabled = false;
-    // 烧录完成后不再自动跳到监控页，由用户手动切换
-    // 勾选"烧录后复位"时通过 GPIO5/RESETn 复位 CC2530
-    // 勾选"烧录后重启烧录器"时延时 3 秒后调用 /api/reboot 重启 ESP8266
-    const doReboot = () => {
+    $('nvreset-btn').disabled = false;
+    $('backup-btn').disabled = false;
+    // 备份完成后刷新文件列表
+    if (msg.info) refreshFileList();
+    if ($('reboot-burner-check').checked) {
       appendLog($('burn-log'), '3 秒后重启烧录器...', 'success');
       setTimeout(() => {
         appendLog($('burn-log'), '正在重启烧录器...', 'success');
         fetch('/api/reboot', { method: 'POST' }).catch(() => {});
       }, 3000);
-    };
-    if ($('reset-after-check').checked) {
-      appendLog($('burn-log'), '复位 CC2530...', 'success');
-      fetch('/api/reset', { method: 'POST' })
-        .then(() => { if ($('reboot-burner-check').checked) doReboot(); })
-        .catch(() => { if ($('reboot-burner-check').checked) doReboot(); });
-    } else if ($('reboot-burner-check').checked) {
-      doReboot();
     }
   }
 }
@@ -803,9 +840,7 @@ async function loadConfig() {
     $('wifi-ssid').value = cfg.wifi_ssid || '';
     $('wifi-password').value = cfg.wifi_password || '';
     $('default-baud-select').value = cfg.monitor_baud || 115200;
-    $('default-verify-check').checked = !!cfg.verify;
     $('baud-select').value = cfg.monitor_baud || 115200;
-    $('verify-check').checked = !!cfg.verify;
   } catch (e) {
     console.error('loadConfig error:', e);
   }
@@ -945,22 +980,6 @@ $('save-monitor-btn').addEventListener('click', async () => {
   }
 });
 
-$('save-burn-btn').addEventListener('click', async () => {
-  const cfg = { verify: $('default-verify-check').checked };
-  const resp = await fetch('/api/config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(cfg)
-  });
-  const r = await resp.json();
-  if (r.success) {
-    $('verify-check').checked = cfg.verify;
-    alert('已保存');
-  } else {
-    alert('保存失败: ' + r.error);
-  }
-});
-
 $('reboot-btn').addEventListener('click', async () => {
   if (!confirm('确定重启 ESP8266?')) return;
   try {
@@ -1008,12 +1027,99 @@ async function pollStatus() {
   } catch (e) {}
 }
 
-// ===== 帮助页：从 /api/help 加载 markdown 文本（与 AI Agent 共用同一份内容） =====
+// ===== 轻量级 markdown → HTML 渲染（纯正则，无依赖） =====
+function renderMarkdown(text) {
+  // 先 HTML 转义
+  let html = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // 代码块 ```...``` （必须最先处理，避免内部标记被篡改）
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    const cls = lang ? ` class="lang-${lang}"` : '';
+    return `<pre><code${cls}>${code.trim()}</code></pre>`;
+  });
+
+  // 行内代码 `code`
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // 水平分割线
+  html = html.replace(/^---+\s*$/gm, '<hr>');
+
+  // 标题 h1-h6
+  html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
+  html = html.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
+  html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
+
+  // 粗体 **text** 和 *斜体*
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+  // 链接 [text](url)
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+  // 无序列表 - 开头
+  html = html.replace(/^[\s]*[-*+]\s+(.+)$/gm, '<li>$1</li>');
+
+  // 有序列表 1. 开头
+  html = html.replace(/^[\s]*\d+\.\s+(.+)$/gm, '<li>$1</li>');
+
+  // 包裹 <li> 为 <ul>/<ol>
+  html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, (match) => {
+    const lines = match.trim().split('\n');
+    // 简单判断：如果所有行都以 <li> 开头，包裹为 <ul>
+    if (lines.every(l => l.trim().startsWith('<li>'))) {
+      return '<ul>\n' + lines.join('\n') + '\n</ul>\n';
+    }
+    return match;
+  });
+
+  // 表格：| header | header | → <table>
+  html = html.replace(/^(\|.+)\n\|[\s-:|]+\|/gm, (match, headerLine) => {
+    // 取表头单元格
+    const headers = headerLine.split('|').filter(c => c.trim()).map(c => c.trim());
+    let table = '<table>\n<thead>\n<tr>\n';
+    headers.forEach(h => { table += `<th>${h}</th>\n`; });
+    table += '</tr>\n</thead>\n<tbody>\n';
+    // 将后续行追加到 tbody（由后续替换处理行内）
+    return table;
+  });
+
+  // 表格行 | cell | cell |
+  html = html.replace(/^\|(.+)\|$/gm, (match, cells) => {
+    const cols = cells.split('|').filter(c => c.trim()).map(c => c.trim());
+    // 跳过表头分隔行（已在上一步处理）
+    if (cols.every(c => /^[\s:-]+$/.test(c))) return match;
+    let row = '<tr>\n';
+    cols.forEach(c => { row += `<td>${c}</td>\n`; });
+    row += '</tr>\n';
+    return row;
+  });
+
+  // 合并表格行到 tbody，关闭 table
+  html = html.replace(/(<table>[\s\S]*?)((?:<tr>[\s\S]*?<\/tr>\n?)+)/g, (match, before, rows) => {
+    return before + rows + '</tbody>\n</table>\n';
+  });
+
+  // 段落：连续非空文本行（不含块级标签）包裹 <p>
+  html = html.replace(/^(?!<[h1-6hruolp\/]|$)(.+)$/gm, '<p>$1</p>');
+
+  // 清理多余空行
+  html = html.replace(/\n{3,}/g, '\n\n');
+
+  return html;
+}
+
+// ===== 帮助页：从 /api/help 加载 markdown 并渲染 =====
 async function loadHelp() {
   try {
     const resp = await fetch('/api/help');
     const text = await resp.text();
-    $('help-content').textContent = text;
+    $('help-content').innerHTML = renderMarkdown(text);
   } catch (e) {
     $('help-content').textContent = '加载失败: ' + e.message;
   }

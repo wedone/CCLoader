@@ -6,7 +6,7 @@
 
 namespace WebAssets {
 
-// index.html (7671 bytes, text/html)
+// index.html (7466 bytes, text/html)
 const char index_html[] PROGMEM = R"=====(
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -78,10 +78,12 @@ const char index_html[] PROGMEM = R"=====(
       <div class="card">
         <h3>烧录</h3>
         <div>选中: <span id="selected-file">未选择</span></div>
-        <label><input type="checkbox" id="verify-check"> 烧录后校验</label>
-        <label><input type="checkbox" id="reset-after-check"> 烧录后复位</label>
         <label><input type="checkbox" id="reboot-burner-check"> 烧录后重启烧录器</label>
-        <button id="burn-btn" class="btn primary">开始烧录</button>
+        <div class="toolbar">
+          <button id="burn-btn" class="btn primary">开始烧录</button>
+          <button id="backup-btn" class="btn">备份固件</button>
+          <button id="nvreset-btn" class="btn danger">清除配网</button>
+        </div>
 
         <div class="progress-container">
           <div class="progress-bar">
@@ -167,14 +169,8 @@ const char index_html[] PROGMEM = R"=====(
       </div>
 
       <div class="card">
-        <h3>默认烧录</h3>
-        <label><input type="checkbox" id="default-verify-check"> 烧录后校验</label>
-        <button id="save-burn-btn" class="btn primary">保存</button>
-      </div>
-
-      <div class="card">
         <h3>设备信息</h3>
-        <div>固件版本: CCLoader-WebUI v1.2</div>
+        <div>固件版本: CCLoader-WebUI v1.3</div>
         <div>运行时长: <span id="uptime">-</span></div>
         <div>WiFi 信号: <span id="rssi">-</span> dBm</div>
         <div>IP 地址: <span id="device-ip">-</span></div>
@@ -189,7 +185,7 @@ const char index_html[] PROGMEM = R"=====(
         <div class="hint">本页内容由 <code>/api/help</code> 返回，AI Agent 调用同一接口获取。修改 <code>data/help.md</code> 后重新生成 <code>web_assets.h</code> 即可同步更新。</div>
       </div>
       <div class="card">
-        <pre id="help-content" class="help-md">加载中...</pre>
+        <div id="help-content" class="help-md">加载中...</div>
       </div>
     </section>
   </main>
@@ -199,9 +195,9 @@ const char index_html[] PROGMEM = R"=====(
 </html>
 
 )=====";
-const size_t index_html_len = 7671;
+const size_t index_html_len = 7466;
 
-// style.css (9183 bytes, text/css)
+// style.css (10404 bytes, text/css)
 const char style_css[] PROGMEM = R"=====(
 /* CCLoader WebUI - 暗色主题响应式样式 */
 
@@ -509,21 +505,63 @@ select:focus {
   white-space: pre;
 }
 
-/* 帮助页 markdown 容器：复用 code-block 风格，自动换行避免横向滚动 */
+/* 帮助页 markdown 渲染容器 */
 .help-md {
-  background: #000;
-  color: #d4d4d4;
-  font-family: Consolas, Monaco, "Courier New", monospace;
-  font-size: 12px;
-  padding: 12px;
-  border-radius: 4px;
+  background: #0d1117;
+  color: #c9d1d9;
+  padding: 16px 20px;
+  border-radius: 6px;
   overflow-x: auto;
   margin: 12px 0;
   border: 1px solid var(--border);
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
+  line-height: 1.6;
+  font-size: 14px;
 }
+.help-md h1 { font-size: 1.6em; border-bottom: 1px solid #21262d; padding-bottom: 8px; margin: 24px 0 16px; color: #e6edf3; }
+.help-md h2 { font-size: 1.35em; border-bottom: 1px solid #21262d; padding-bottom: 6px; margin: 20px 0 12px; color: #e6edf3; }
+.help-md h3 { font-size: 1.15em; margin: 16px 0 8px; color: #e6edf3; }
+.help-md p { margin: 8px 0; }
+.help-md a { color: #58a6ff; }
+.help-md a:hover { text-decoration: underline; }
+.help-md code {
+  background: #161b22;
+  color: #f0f6fc;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 0.88em;
+}
+.help-md pre {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 12px 16px;
+  overflow-x: auto;
+  margin: 12px 0;
+}
+.help-md pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+.help-md table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 12px 0;
+  font-size: 0.92em;
+}
+.help-md th, .help-md td {
+  border: 1px solid #30363d;
+  padding: 6px 10px;
+  text-align: left;
+}
+.help-md th { background: #161b22; font-weight: 600; }
+.help-md tr:nth-child(even) td { background: #0d1117; }
+.help-md ul, .help-md ol { padding-left: 24px; margin: 8px 0; }
+.help-md li { margin: 4px 0; }
+.help-md hr { border: none; border-top: 1px solid #21262d; margin: 24px 0; }
+.help-md strong { color: #e6edf3; }
 .code-block code { color: #569cd6; }
 
 .step-list {
@@ -607,9 +645,9 @@ select:focus {
 .ota-preview .addr-warn { color: var(--warning); }
 
 )=====";
-const size_t style_css_len = 9183;
+const size_t style_css_len = 10404;
 
-// app.js (37235 bytes, application/javascript)
+// app.js (41087 bytes, application/javascript)
 const char app_js[] PROGMEM = R"=====(
 // CCLoader WebUI 前端逻辑
 // 使用 SSE (EventSource) 接收实时事件，无外部库依赖
@@ -1206,22 +1244,17 @@ $('burn-btn').addEventListener('click', async () => {
     alert('请先选择固件');
     return;
   }
-  const verify = $('verify-check').checked;
-  const reset_after = $('reset-after-check').checked;
   $('burn-btn').disabled = true;
   $('burn-log').innerHTML = '';
   $('burn-progress-bar').style.width = '0%';
   $('burn-progress-text').textContent = '0%';
-  const tags = [];
-  if (verify) tags.push('校验');
-  if (reset_after) tags.push('复位');
-  appendLog($('burn-log'), '开始烧录: ' + selectedFile + (tags.length ? ' (' + tags.join('+') + ')' : ''), 'success');
+  appendLog($('burn-log'), '开始烧录: ' + selectedFile, 'success');
 
   try {
     const resp = await fetch('/api/burn', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename: selectedFile, verify: verify, reset_after: reset_after })
+      body: JSON.stringify({ filename: selectedFile })
     });
     const result = await resp.json();
     if (!result.success) {
@@ -1236,35 +1269,77 @@ $('burn-btn').addEventListener('click', async () => {
   }
 });
 
+$('nvreset-btn').addEventListener('click', async () => {
+  if (!confirm('确定清除 CC2530 的配网信息？\n\n固件不会被擦除，但设备需要重新加入 Zigbee 网络。\n此操作不可撤销！')) return;
+  $('nvreset-btn').disabled = true;
+  $('burn-btn').disabled = true;
+  $('burn-log').innerHTML = '';
+  $('burn-progress-bar').style.width = '0%';
+  $('burn-progress-text').textContent = '0%';
+  appendLog($('burn-log'), '开始清除配网：读取 Flash → 清除 NV → 写回', 'success');
+  try {
+    const resp = await fetch('/api/nvreset', { method: 'POST' });
+    const result = await resp.json();
+    if (!result.success) {
+      appendLog($('burn-log'), '启动失败: ' + result.error, 'error');
+      $('nvreset-btn').disabled = false;
+      $('burn-btn').disabled = false;
+    }
+  } catch (e) {
+    appendLog($('burn-log'), '请求失败: ' + e.message, 'error');
+    $('nvreset-btn').disabled = false;
+    $('burn-btn').disabled = false;
+  }
+});
+
+$('backup-btn').addEventListener('click', async () => {
+  if (!confirm('确定备份 CC2530 固件？\n\n读取 Flash 保存到烧录器，约 1 分钟。\n完成后可通过文件列表下载到本地。')) return;
+  $('backup-btn').disabled = true;
+  $('burn-btn').disabled = true;
+  $('burn-log').innerHTML = '';
+  $('burn-progress-bar').style.width = '0%';
+  $('burn-progress-text').textContent = '0%';
+  appendLog($('burn-log'), '开始备份固件：读取 Flash 保存到 LittleFS...', 'success');
+  try {
+    const resp = await fetch('/api/backup', { method: 'POST' });
+    const result = await resp.json();
+    if (!result.success) {
+      appendLog($('burn-log'), '启动失败: ' + result.error, 'error');
+      $('backup-btn').disabled = false;
+      $('burn-btn').disabled = false;
+    }
+  } catch (e) {
+    appendLog($('burn-log'), '请求失败: ' + e.message, 'error');
+    $('backup-btn').disabled = false;
+    $('burn-btn').disabled = false;
+  }
+});
+
 function updateBurnProgress(msg) {
   $('burn-progress-bar').style.width = msg.percent + '%';
   $('burn-progress-text').textContent = msg.percent + '% (' + msg.current_block + '/' + msg.total_blocks + ')';
   if (msg.current_block > 0 && msg.current_block % 50 === 0 && msg.current_block < msg.total_blocks) {
-    appendLog($('burn-log'), '写入块 ' + msg.current_block + '/' + msg.total_blocks);
+    appendLog($('burn-log'), '处理块 ' + msg.current_block + '/' + msg.total_blocks);
   }
   if (msg.error) {
     appendLog($('burn-log'), '错误: ' + msg.error, 'error');
   }
+  if (msg.info) {
+    appendLog($('burn-log'), msg.info, 'success');
+  }
   if (msg.done) {
-    appendLog($('burn-log'), '烧录完成', 'success');
+    appendLog($('burn-log'), '操作完成', 'success');
     $('burn-btn').disabled = false;
-    // 烧录完成后不再自动跳到监控页，由用户手动切换
-    // 勾选"烧录后复位"时通过 GPIO5/RESETn 复位 CC2530
-    // 勾选"烧录后重启烧录器"时延时 3 秒后调用 /api/reboot 重启 ESP8266
-    const doReboot = () => {
+    $('nvreset-btn').disabled = false;
+    $('backup-btn').disabled = false;
+    // 备份完成后刷新文件列表
+    if (msg.info) refreshFileList();
+    if ($('reboot-burner-check').checked) {
       appendLog($('burn-log'), '3 秒后重启烧录器...', 'success');
       setTimeout(() => {
         appendLog($('burn-log'), '正在重启烧录器...', 'success');
         fetch('/api/reboot', { method: 'POST' }).catch(() => {});
       }, 3000);
-    };
-    if ($('reset-after-check').checked) {
-      appendLog($('burn-log'), '复位 CC2530...', 'success');
-      fetch('/api/reset', { method: 'POST' })
-        .then(() => { if ($('reboot-burner-check').checked) doReboot(); })
-        .catch(() => { if ($('reboot-burner-check').checked) doReboot(); });
-    } else if ($('reboot-burner-check').checked) {
-      doReboot();
     }
   }
 }
@@ -1416,9 +1491,7 @@ async function loadConfig() {
     $('wifi-ssid').value = cfg.wifi_ssid || '';
     $('wifi-password').value = cfg.wifi_password || '';
     $('default-baud-select').value = cfg.monitor_baud || 115200;
-    $('default-verify-check').checked = !!cfg.verify;
     $('baud-select').value = cfg.monitor_baud || 115200;
-    $('verify-check').checked = !!cfg.verify;
   } catch (e) {
     console.error('loadConfig error:', e);
   }
@@ -1558,22 +1631,6 @@ $('save-monitor-btn').addEventListener('click', async () => {
   }
 });
 
-$('save-burn-btn').addEventListener('click', async () => {
-  const cfg = { verify: $('default-verify-check').checked };
-  const resp = await fetch('/api/config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(cfg)
-  });
-  const r = await resp.json();
-  if (r.success) {
-    $('verify-check').checked = cfg.verify;
-    alert('已保存');
-  } else {
-    alert('保存失败: ' + r.error);
-  }
-});
-
 $('reboot-btn').addEventListener('click', async () => {
   if (!confirm('确定重启 ESP8266?')) return;
   try {
@@ -1621,12 +1678,99 @@ async function pollStatus() {
   } catch (e) {}
 }
 
-// ===== 帮助页：从 /api/help 加载 markdown 文本（与 AI Agent 共用同一份内容） =====
+// ===== 轻量级 markdown → HTML 渲染（纯正则，无依赖） =====
+function renderMarkdown(text) {
+  // 先 HTML 转义
+  let html = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // 代码块 ```...``` （必须最先处理，避免内部标记被篡改）
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    const cls = lang ? ` class="lang-${lang}"` : '';
+    return `<pre><code${cls}>${code.trim()}</code></pre>`;
+  });
+
+  // 行内代码 `code`
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // 水平分割线
+  html = html.replace(/^---+\s*$/gm, '<hr>');
+
+  // 标题 h1-h6
+  html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
+  html = html.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
+  html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
+
+  // 粗体 **text** 和 *斜体*
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+  // 链接 [text](url)
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+  // 无序列表 - 开头
+  html = html.replace(/^[\s]*[-*+]\s+(.+)$/gm, '<li>$1</li>');
+
+  // 有序列表 1. 开头
+  html = html.replace(/^[\s]*\d+\.\s+(.+)$/gm, '<li>$1</li>');
+
+  // 包裹 <li> 为 <ul>/<ol>
+  html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, (match) => {
+    const lines = match.trim().split('\n');
+    // 简单判断：如果所有行都以 <li> 开头，包裹为 <ul>
+    if (lines.every(l => l.trim().startsWith('<li>'))) {
+      return '<ul>\n' + lines.join('\n') + '\n</ul>\n';
+    }
+    return match;
+  });
+
+  // 表格：| header | header | → <table>
+  html = html.replace(/^(\|.+)\n\|[\s-:|]+\|/gm, (match, headerLine) => {
+    // 取表头单元格
+    const headers = headerLine.split('|').filter(c => c.trim()).map(c => c.trim());
+    let table = '<table>\n<thead>\n<tr>\n';
+    headers.forEach(h => { table += `<th>${h}</th>\n`; });
+    table += '</tr>\n</thead>\n<tbody>\n';
+    // 将后续行追加到 tbody（由后续替换处理行内）
+    return table;
+  });
+
+  // 表格行 | cell | cell |
+  html = html.replace(/^\|(.+)\|$/gm, (match, cells) => {
+    const cols = cells.split('|').filter(c => c.trim()).map(c => c.trim());
+    // 跳过表头分隔行（已在上一步处理）
+    if (cols.every(c => /^[\s:-]+$/.test(c))) return match;
+    let row = '<tr>\n';
+    cols.forEach(c => { row += `<td>${c}</td>\n`; });
+    row += '</tr>\n';
+    return row;
+  });
+
+  // 合并表格行到 tbody，关闭 table
+  html = html.replace(/(<table>[\s\S]*?)((?:<tr>[\s\S]*?<\/tr>\n?)+)/g, (match, before, rows) => {
+    return before + rows + '</tbody>\n</table>\n';
+  });
+
+  // 段落：连续非空文本行（不含块级标签）包裹 <p>
+  html = html.replace(/^(?!<[h1-6hruolp\/]|$)(.+)$/gm, '<p>$1</p>');
+
+  // 清理多余空行
+  html = html.replace(/\n{3,}/g, '\n\n');
+
+  return html;
+}
+
+// ===== 帮助页：从 /api/help 加载 markdown 并渲染 =====
 async function loadHelp() {
   try {
     const resp = await fetch('/api/help');
     const text = await resp.text();
-    $('help-content').textContent = text;
+    $('help-content').innerHTML = renderMarkdown(text);
   } catch (e) {
     $('help-content').textContent = '加载失败: ' + e.message;
   }
@@ -1645,7 +1789,7 @@ function init() {
 init();
 
 )=====";
-const size_t app_js_len = 37235;
+const size_t app_js_len = 41087;
 
 // config.json (90 bytes, application/json)
 const char config_json[] PROGMEM = R"=====(
@@ -1659,7 +1803,7 @@ const char config_json[] PROGMEM = R"=====(
 )=====";
 const size_t config_json_len = 90;
 
-// help.md (12563 bytes, text/markdown; charset=utf-8)
+// help.md (12895 bytes, text/markdown; charset=utf-8)
 const char help_md[] PROGMEM = R"=====(
 # CCLoader WebUI 帮助
 
@@ -1703,8 +1847,10 @@ CC2530 的 3.3V 可从 NodeMCU 的 3V3 引脚取，电流 < 50mA。
 ### 2.1 关键规则
 
 - **API 仅接受 `.bin`**：上传 `.hex` 会被拒绝并返回 400 + `hex_not_supported` 错误。浏览器端上传 `.hex` 会自动转换，API 调用需自行转换（算法见下方 2.3 节）。
-- **烧录强制校验**：`/api/burn` 的 `verify` 参数被忽略，固件内部强制 `verify=true`，保证烧录正确性。烧录失败会通过 SSE `burn_progress.error` 和 `/api/status` 的 `burn.error` 字段报出。
+- **烧录强制校验**：固件内部强制开启校验，烧录后自动回读验证，保证烧录正确性。烧录失败会通过 SSE `burn_progress.error` 和 `/api/status` 的 `burn.error` 字段报出。
 - **烧录强制异步**：`/api/burn` 立即返回 `task_id`，烧录在后台执行。`?async=1` 参数兼容但非必需。通过轮询 `/api/status` 跟踪进度。
+- **清除配网**：`POST /api/nvreset` 读取 Flash → 清除 NV → 全片擦除 → 写回，保留固件仅清除配网信息。异步执行，进度通过 SSE 和进度条显示。
+- **备份固件**：`POST /api/backup` 读取 CC2530 全部 Flash 保存到 LittleFS，生成 `backup_YYYYMMDD_HHMMSS.bin` 文件，可在文件列表中下载。异步执行，进度通过 SSE 显示。
 - **NTP 授时**：WiFi 连接后自动同步北京时间（UTC+8），`/api/status` 的 `time` 字段为当前 epoch 秒；未授时返回 0。
 
 ### 2.2 完整流程示例
@@ -1718,7 +1864,7 @@ BIN=DIYRuZRT_256k.bin
 curl -s -F "file=@${BIN}" http://${IP}/api/upload
 # 返回: {"success":true,"filename":"DIYRuZRT_256k.bin","size":262144}
 
-# 2. 发起烧录（强制异步 + 强制校验，verify 参数无效）
+# 2. 发起烧录（强制异步 + 强制校验）
 curl -s -X POST "http://${IP}/api/burn" \
   -H "Content-Type: application/json" \
   -d '{"filename":"DIYRuZRT_256k.bin"}'
@@ -1848,6 +1994,8 @@ hex2bin('CC2530.hex', 'CC2530.bin')
 | POST | /api/upload | 上传 BIN（multipart, 字段 file）。**.hex 会被拒绝**，返回 400 + hex2bin 提示 |
 | DELETE | /api/files/{name} | 删除指定 BIN |
 | POST | /api/burn | 烧录（强制异步 + 强制校验，立即返回 task_id） |
+| POST | /api/nvreset | 清除配网（读取 Flash → 清除 NV → 写回，保留固件） |
+| POST | /api/backup | 备份固件（读取 Flash 保存到 LittleFS，生成 .bin 文件） |
 | POST | /api/monitor | 开始监控（body: {baud,auto_reset}） |
 | GET  | /api/monitor/buffer?since=N | 获取日志（断点续传） |
 | POST | /api/stop | 停止监控 |
@@ -1940,16 +2088,13 @@ A: NTP 未同步。固件启动后通过 NTP 自动校准北京时间（UTC+8）
 **Q: API 上传 .hex 报错 hex_not_supported？**
 A: API（curl/Agent）仅接受 .bin，浏览器端上传 .hex 会自动转换但 API 不会。参考 2.3 节的 hex2bin 算法和 Python 实现，转换后再上传。
 
-**Q: 烧录时 verify 参数不生效？**
-A: API 烧录强制开启校验（verify=true），`verify` 参数被忽略。这是为了保证烧录正确性，避免 AI 跳过校验导致 CC2530 异常。校验失败会在 `burn.error` 字段报出。
-
 **Q: "烧录后重启烧录器"勾选项有什么用？**
-A: 烧录成功后延时 3 秒自动调用 /api/reboot 重启 ESP8266，可释放内存、重新初始化 GPIO 状态，适合连续多次烧录或烧录后立即监控的场景。若同时勾选"烧录后复位"，会先复位 CC2530 再延时重启。
+A: 烧录成功后延时 3 秒自动调用 /api/reboot 重启 ESP8266，可释放内存、重新初始化 GPIO 状态，适合连续多次烧录或烧录后立即监控的场景。
 
-**Q: "烧录后复位"勾选项有什么用？**
-A: 烧录成功后通过 GPIO5/RESETn 复位 CC2530，让芯片从 main() 重新启动。适合烧录后立即观察启动日志或确认固件正常运行。注意：burnFromLittleFS 内部末尾的 RunDUP() 已经复位过一次，此选项是额外的显式复位。
+**Q: 如何清除 CC2530 的 Zigbee 配网信息（不擦除固件）？**
+A: 在 WebUI 烧录区点击"清除配网"按钮，或直接调用 `POST /api/nvreset`。流程：读取 CC2530 全部 Flash 到临时文件 → 清除尾部 NV 区域（最后 4KB）→ 全片擦除 → 写回。固件保留，仅清除配网信息，设备需要重新加入 Zigbee 网络。整个过程约 2 分钟，进度通过进度条显示。
 
 )=====";
-const size_t help_md_len = 12563;
+const size_t help_md_len = 12895;
 
 }  // namespace WebAssets
