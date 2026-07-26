@@ -954,6 +954,12 @@ void handleJs() {
   sendChunked_P("application/javascript", WebAssets::app_js, WebAssets::app_js_len);
 }
 
+// 帮助文档（markdown 纯文本，AI Agent 和 WebUI 帮助页共用同一份内容）
+// 返回 text/plain + UTF-8，避免浏览器误渲染 markdown
+void handleHelp() {
+  server.send_P(200, "text/plain; charset=utf-8", WebAssets::help_md);
+}
+
 void handleStatus() {
   String json = "{";
   const char* stateStr = "idle";
@@ -1100,7 +1106,9 @@ void handleBurn() {
     return;
   }
   String body = server.arg("plain");
-  bool verify = jsonGetBool(body, "verify", false);
+  // 强制校验：API 烧录必须 verify=true，忽略客户端传的 false
+  // 避免 AI 跳过校验导致 CC2530 烧录异常未被发现
+  bool verify = true;
   String filename = jsonGetString(body, "filename");
   if (filename.length() == 0) filename = "firmware.bin";
 
@@ -1121,9 +1129,10 @@ void handleBurn() {
   g_burn_pending_filename = filename;
   g_burn_pending_verify = verify;
   String resp = "{\"success\":true,\"async\":true,\"task_id\":" + String(g_burn_task_id) +
-                ",\"total_blocks\":" + String(totalBlocks) + "}";
+                ",\"total_blocks\":" + String(totalBlocks) +
+                ",\"verify\":true,\"verify_forced\":true}";
   server.send(202, "application/json", resp);
-  Serial.printf("Burn queued: task=%u file=%s verify=%d blocks=%u\n",
+  Serial.printf("Burn queued: task=%u file=%s verify=%d(forced) blocks=%u\n",
                 g_burn_task_id, filename.c_str(), verify, totalBlocks);
 }
 
@@ -1361,6 +1370,7 @@ void initHttpRoutes() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/style.css", HTTP_GET, handleCss);
   server.on("/app.js", HTTP_GET, handleJs);
+  server.on("/api/help", HTTP_GET, handleHelp);
   server.on("/api/status", HTTP_GET, handleStatus);
   server.on("/api/config", HTTP_GET, handleGetConfig);
   server.on("/api/config", HTTP_POST, handlePostConfig);

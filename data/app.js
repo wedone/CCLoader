@@ -594,17 +594,21 @@ $('burn-btn').addEventListener('click', async () => {
     return;
   }
   const verify = $('verify-check').checked;
+  const reset_after = $('reset-after-check').checked;
   $('burn-btn').disabled = true;
   $('burn-log').innerHTML = '';
   $('burn-progress-bar').style.width = '0%';
   $('burn-progress-text').textContent = '0%';
-  appendLog($('burn-log'), '开始烧录: ' + selectedFile + (verify ? ' (校验)' : ''), 'success');
+  const tags = [];
+  if (verify) tags.push('校验');
+  if (reset_after) tags.push('复位');
+  appendLog($('burn-log'), '开始烧录: ' + selectedFile + (tags.length ? ' (' + tags.join('+') + ')' : ''), 'success');
 
   try {
     const resp = await fetch('/api/burn', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename: selectedFile, verify: verify })
+      body: JSON.stringify({ filename: selectedFile, verify: verify, reset_after: reset_after })
     });
     const result = await resp.json();
     if (!result.success) {
@@ -632,10 +636,22 @@ function updateBurnProgress(msg) {
     appendLog($('burn-log'), '烧录完成', 'success');
     $('burn-btn').disabled = false;
     // 烧录完成后不再自动跳到监控页，由用户手动切换
-    // 勾选"烧录完成重启烧录器"时调用 /api/reboot 重启 ESP8266
-    if ($('reboot-burner-check').checked) {
-      appendLog($('burn-log'), '正在重启烧录器...', 'success');
-      fetch('/api/reboot', { method: 'POST' }).catch(() => {});
+    // 勾选"烧录后复位"时通过 GPIO5/RESETn 复位 CC2530
+    // 勾选"烧录后重启烧录器"时延时 3 秒后调用 /api/reboot 重启 ESP8266
+    const doReboot = () => {
+      appendLog($('burn-log'), '3 秒后重启烧录器...', 'success');
+      setTimeout(() => {
+        appendLog($('burn-log'), '正在重启烧录器...', 'success');
+        fetch('/api/reboot', { method: 'POST' }).catch(() => {});
+      }, 3000);
+    };
+    if ($('reset-after-check').checked) {
+      appendLog($('burn-log'), '复位 CC2530...', 'success');
+      fetch('/api/reset', { method: 'POST' })
+        .then(() => { if ($('reboot-burner-check').checked) doReboot(); })
+        .catch(() => { if ($('reboot-burner-check').checked) doReboot(); });
+    } else if ($('reboot-burner-check').checked) {
+      doReboot();
     }
   }
 }
@@ -992,11 +1008,23 @@ async function pollStatus() {
   } catch (e) {}
 }
 
+// ===== 帮助页：从 /api/help 加载 markdown 文本（与 AI Agent 共用同一份内容） =====
+async function loadHelp() {
+  try {
+    const resp = await fetch('/api/help');
+    const text = await resp.text();
+    $('help-content').textContent = text;
+  } catch (e) {
+    $('help-content').textContent = '加载失败: ' + e.message;
+  }
+}
+
 // ===== 初始化 =====
 function init() {
   connectSSE();
   refreshFileList();
   loadConfig();
+  loadHelp();
   pollStatus();
   setInterval(pollStatus, 3000);
 }
