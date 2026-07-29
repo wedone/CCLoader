@@ -359,7 +359,8 @@ void ProgrammerInit(void)
 enum CCLoaderState {
   STATE_IDLE,
   STATE_BURNING,
-  STATE_MONITORING
+  STATE_MONITORING,
+  STATE_SNIFFING
 };
 CCLoaderState g_state = STATE_IDLE;
 
@@ -426,6 +427,26 @@ bool g_backup_pending = false;
 uint8_t g_monitor_ring[MONITOR_RING_SIZE];
 uint32_t g_monitor_ring_head = 0;   // 下一个写入位置 (mod SIZE)
 uint32_t g_monitor_ring_total = 0;  // 累计写入字节数（单调递增，不取模）
+
+// ===== Sniffer 抓包功能（SNIFFING 状态）=====
+// ZBOSS sniffer 固件通过 UART0 (P0_3, 115200 8N1) 输出 IEEE 802.15.4 帧
+// ESP8266 GPIO3 (RX) 接收，透传到 PC 端生成 pcap
+// 详见 CCLoader_Sniffer抓包改造需求.md
+#define SNIFFER_BUFFER_SIZE 16384  // 16KB 环形缓冲（32KB 会导致 ESP8266 RAM 不足无法启动）
+uint8_t g_sniffer_buf[SNIFFER_BUFFER_SIZE];
+volatile uint32_t g_sniffer_head = 0;   // 写入位置 (Serial → 缓冲)
+volatile uint32_t g_sniffer_tail = 0;   // 读取位置 (缓冲 → HTTP stream)
+volatile uint32_t g_sniffer_total_rx = 0;
+volatile uint32_t g_sniffer_total_sent = 0;
+volatile uint32_t g_sniffer_drop_bytes = 0;  // 缓冲满累计丢弃字节数
+volatile uint32_t g_sniffer_drop_count = 0;  // 丢弃次数（每 1024 字节计一次）
+volatile uint32_t g_sniffer_drop_accum = 0;  // 丢弃累计（满 1024 推送标记包）
+uint8_t g_sniffer_channel = 11;
+uint32_t g_sniffer_baud = 115200;
+unsigned long g_sniffer_start_ms = 0;
+// sniffer stream 客户端（同时只允许 1 个，避免多客户端分流数据）
+WiFiClient g_sniffer_client;
+bool g_sniffer_client_active = false;
 
 // ===== 简易 JSON 工具（仅处理顶层简单 key:value，避免 ArduinoJson 依赖）=====
 // JSON 字符串内的转义：把 " 和 \ 反转义，避免破坏 JSON
@@ -676,6 +697,7 @@ void sseLoop() {
         const char* stateStr = "idle";
         if (g_state == STATE_BURNING) stateStr = "burning";
         else if (g_state == STATE_MONITORING) stateStr = "monitoring";
+        else if (g_state == STATE_SNIFFING) stateStr = "sniffing";
         String json = "{\"type\":\"status\",\"state\":\"";
         json += stateStr;
         json += "\"}";
@@ -1071,6 +1093,155 @@ void exitMonitorMode() {
   sseSend(json);
 }
 
+// ===== Sniffer 抓包模式（SNIFFING 状态）=====
+// ZBOSS sniffer 固件经 UART0 (P0_3, 115200 8N1) 输出 IEEE 802.15.4 帧
+// ESP8266 GPIO3 (RX) 接收原始字节存入 32KB 环形缓冲，
+// 由 /api/sniffer/stream 通过 HTTP chunked 透传到 PC，PC 端解析生成 pcap
+// 详见 CCLoader_Sniffer抓包改造需求.md
+
+// 写入环形缓冲（loop 中从 Serial 读取后调用）
+// 缓冲满时丢弃最旧数据并累计 drop_bytes，每满 1024 字节插入一个丢包标记包
+void snifferWrite(const uint8_t *data, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    uint32_t next = (g_sniffer_head + 1) % SNIFFER_BUFFER_SIZE;
+    if (next == g_sniffer_tail) {
+      // 缓冲满，丢弃最旧数据
+      g_sniffer_tail = (g_sniffer_tail + 1) % SNIFFER_BUFFER_SIZE;
+      g_sniffer_drop_bytes++;
+      g_sniffer_drop_accum++;
+      // 累计 1024 字节丢弃，插入标记包（ZBOSS 头格式，type=0xFF）
+      if (g_sniffer_drop_accum >= 1024) {
+        g_sniffer_drop_accum = 0;
+        g_sniffer_drop_count++;
+        // 标记包：len=8, type=0xFF, tail=0x0000, dropped_bytes(大端 4 字节)
+        uint8_t marker[8];
+        marker[0] = 8;
+        marker[1] = 0xFF;
+        marker[2] = 0x00;
+        marker[3] = 0x00;
+        uint32_t db = g_sniffer_drop_bytes;
+        marker[4] = (db >> 24) & 0xFF;
+        marker[5] = (db >> 16) & 0xFF;
+        marker[6] = (db >> 8) & 0xFF;
+        marker[7] = db & 0xFF;
+        // 递归写入标记包（此时已腾出空间，不会再次溢出）
+        snifferWrite(marker, 8);
+      }
+    }
+    g_sniffer_buf[g_sniffer_head] = data[i];
+    g_sniffer_head = next;
+    g_sniffer_total_rx++;
+  }
+}
+
+// 从环形缓冲读取到 out，最多 max_len 字节，返回实际读取数
+size_t snifferRead(uint8_t *out, size_t max_len) {
+  size_t count = 0;
+  while (count < max_len && g_sniffer_tail != g_sniffer_head) {
+    out[count++] = g_sniffer_buf[g_sniffer_tail];
+    g_sniffer_tail = (g_sniffer_tail + 1) % SNIFFER_BUFFER_SIZE;
+  }
+  return count;
+}
+
+// 进入 sniffer 模式
+void enterSnifferMode(uint8_t channel, uint32_t baud) {
+  // 先复位 CC2530（在 Serial 切换前，确保 sniffer 固件从干净状态启动）
+  // 实测：不加复位时 Serial.available() 始终返回 0（与 monitor 模式的关键差异）
+  // sniffer 固件上电自动启动通道 11，复位可确保抓包从头开始
+  resetCC2530();
+  // 切换 Serial 到 sniffer 波特率
+  Serial.flush();
+  Serial.end();
+  delay(100);
+  Serial.begin(baud);
+  // 清空环形缓冲与统计
+  g_sniffer_head = 0;
+  g_sniffer_tail = 0;
+  g_sniffer_total_rx = 0;
+  g_sniffer_total_sent = 0;
+  g_sniffer_drop_bytes = 0;
+  g_sniffer_drop_count = 0;
+  g_sniffer_drop_accum = 0;
+  g_sniffer_channel = channel;
+  g_sniffer_baud = baud;
+  g_sniffer_start_ms = millis();
+  g_sniffer_client_active = false;
+  g_state = STATE_SNIFFING;
+  digitalWrite(LED, HIGH);
+  // 注意：不发送通道号给 CC2530。
+  // sniffer 固件已配置上电自动启动通道 11（zb_sniffer_init 中 start_channel=11）。
+  // 实测 Serial.write+flush 会导致 Serial.available() 始终返回 0（RX 失效），
+  // 原因待查（可能与 ESP8266 HardwareSerial 内部状态有关）。
+  // 如需切换通道，使用 /api/sniffer/channel 接口（仅在确有需要时调用）。
+  // 通知前端
+  String json = "{\"type\":\"sniffer_start\",\"channel\":" + String(channel) + "}";
+  sseSend(json);
+  // 注意：此处不能用 Serial.printf/println 调试输出！
+  // 实测任何 Serial.write（含 printf/println）都会导致 ESP8266 HardwareSerial
+  // RX 状态异常，Serial.available() 始终返回 0（用户已验证 monitor 模式不写 Serial
+  // 能正常接收，sniffer 模式写 Serial.printf 后收不到数据）。
+  // 原因待查（可能与 ESP8266 HardwareSerial 双工实现有关）。
+}
+
+// 退出 sniffer 模式
+void exitSnifferMode() {
+  g_state = STATE_IDLE;
+  // 断开 stream 客户端
+  if (g_sniffer_client_active && g_sniffer_client.connected()) {
+    g_sniffer_client.stop();
+  }
+  g_sniffer_client_active = false;
+  digitalWrite(LED, LOW);
+  // 恢复 Serial 到默认波特率
+  Serial.flush();
+  Serial.end();
+  delay(100);
+  Serial.begin(115200);
+  String json = "{\"type\":\"sniffer_stop\"}";
+  sseSend(json);
+  Serial.println("Sniffer stopped");
+}
+
+// loop 中的 sniffer 处理：从 Serial 读取数据写入环形缓冲
+// 采用与 handleMonitoring 完全一致的逐字节读取方式（Serial.readBytes 在 ESP8266
+// 上可能因 timedRead 阻塞或行为异常导致收不到数据，逐字节 read 已在 monitor 模式验证可靠）
+void handleSniffing() {
+  const uint16_t MAX_READ_PER_LOOP = 512;
+  uint16_t readThisCall = 0;
+  while (Serial.available() && readThisCall < MAX_READ_PER_LOOP) {
+    uint8_t ch = Serial.read();
+    // 写入环形缓冲
+    uint32_t next = (g_sniffer_head + 1) % SNIFFER_BUFFER_SIZE;
+    if (next == g_sniffer_tail) {
+      // 缓冲满，丢弃最旧数据
+      g_sniffer_tail = (g_sniffer_tail + 1) % SNIFFER_BUFFER_SIZE;
+      g_sniffer_drop_bytes++;
+      g_sniffer_drop_accum++;
+      if (g_sniffer_drop_accum >= 1024) {
+        g_sniffer_drop_accum = 0;
+        g_sniffer_drop_count++;
+        // 插入丢包标记包（简化处理，直接覆盖）
+        uint8_t marker[8] = {8, 0xFF, 0x00, 0x00,
+                             (uint8_t)(g_sniffer_drop_bytes >> 24),
+                             (uint8_t)(g_sniffer_drop_bytes >> 16),
+                             (uint8_t)(g_sniffer_drop_bytes >> 8),
+                             (uint8_t)(g_sniffer_drop_bytes & 0xFF)};
+        for (uint8_t i = 0; i < 8; i++) {
+          g_sniffer_buf[g_sniffer_head] = marker[i];
+          g_sniffer_head = (g_sniffer_head + 1) % SNIFFER_BUFFER_SIZE;
+          // 标记包写入时也可能触发丢弃，但 8 字节不会循环满
+        }
+        next = (g_sniffer_head + 1) % SNIFFER_BUFFER_SIZE;
+      }
+    }
+    g_sniffer_buf[g_sniffer_head] = ch;
+    g_sniffer_head = next;
+    g_sniffer_total_rx++;
+    readThisCall++;
+  }
+}
+
 void handleMonitoring() {
   // 限制单次 loop 读取字节数，避免 CC2530 高速输出时 while(Serial.available())
   // 长时间占用 CPU，导致 server.handleClient() 被饿死、/api/status 等接口假死
@@ -1156,6 +1327,7 @@ void handleStatus() {
   const char* stateStr = "idle";
   if (g_state == STATE_BURNING) stateStr = "burning";
   else if (g_state == STATE_MONITORING) stateStr = "monitoring";
+  else if (g_state == STATE_SNIFFING) stateStr = "sniffing";
   json += "\"state\":\"";
   json += stateStr;
   json += "\",\"config_mode\":" + String(g_in_config_mode ? "true" : "false");
@@ -1169,6 +1341,15 @@ void handleStatus() {
   json += "\"active\":" + String(g_state == STATE_MONITORING ? "true" : "false");
   json += ",\"baud\":" + String(g_monitor_baud);
   json += ",\"bytes_received\":" + String(g_monitor_bytes_total);
+  json += "},\"sniffer\":{";
+  json += "\"active\":" + String(g_state == STATE_SNIFFING ? "true" : "false");
+  json += ",\"channel\":" + String(g_sniffer_channel);
+  json += ",\"baud\":" + String(g_sniffer_baud);
+  json += ",\"buffer_size\":" + String(SNIFFER_BUFFER_SIZE);
+  json += ",\"bytes_received\":" + String(g_sniffer_total_rx);
+  json += ",\"bytes_sent\":" + String(g_sniffer_total_sent);
+  json += ",\"dropped_bytes\":" + String(g_sniffer_drop_bytes);
+  json += ",\"drop_count\":" + String(g_sniffer_drop_count);
   json += "},\"wifi\":{";
   json += "\"ssid\":\"" + jsonEscape(WiFi.SSID()) + "\"";
   if (WiFi.status() == WL_CONNECTED) {
@@ -1368,6 +1549,8 @@ void handleStop() {
   if (g_state == STATE_MONITORING) {
     exitMonitorMode();
     digitalWrite(LED, LOW);
+  } else if (g_state == STATE_SNIFFING) {
+    exitSnifferMode();
   }
   server.send(200, "application/json", "{\"success\":true}");
 }
@@ -1577,6 +1760,146 @@ void handleWifiConnect() {
   }
 }
 
+// ===== Sniffer API Handlers =====
+// POST /api/sniffer/start  启动 sniffer 模式（必须 IDLE）
+//   body: {"channel":11,"baud":115200}
+//   返回: {"success":true,"channel":11,"baud":115200,"buffer_size":32768}
+void handleSnifferStart() {
+  if (g_state != STATE_IDLE) {
+    server.send(409, "application/json", "{\"error\":\"busy\"}");
+    return;
+  }
+  String body = server.arg("plain");
+  long channel = jsonGetInt(body, "channel", 11);
+  long baud = jsonGetInt(body, "baud", 115200);
+  if (channel < 11 || channel > 26) {
+    server.send(400, "application/json", "{\"error\":\"invalid channel\"}");
+    return;
+  }
+  if (baud < 9600 || baud > 230400) {
+    server.send(400, "application/json", "{\"error\":\"invalid baud\"}");
+    return;
+  }
+  String json = "{\"success\":true,\"channel\":" + String((int)channel) +
+                ",\"baud\":" + String((int)baud) +
+                ",\"buffer_size\":" + String(SNIFFER_BUFFER_SIZE) + "}";
+  server.send(200, "application/json", json);
+  enterSnifferMode((uint8_t)channel, (uint32_t)baud);
+}
+
+// POST /api/sniffer/channel  切换抓包通道（必须 SNIFFING）
+//   body: {"channel":15}
+//   返回: 501 + 提示信息（当前 sniffer 固件不支持运行时切换通道）
+// 注意：sniffer 固件的 serial_rx_inter_handler 会 zb_clear_sniffer+zb_start_sniffer，
+// 可能影响抓包；且 Serial.write+flush 可能导致 RX 失效（见 enterSnifferMode 注释）。
+// 如需切换通道，请重新烧录对应通道的 sniffer 固件。
+void handleSnifferChannel() {
+  if (g_state != STATE_SNIFFING) {
+    server.send(409, "application/json", "{\"error\":\"not sniffing\"}");
+    return;
+  }
+  String body = server.arg("plain");
+  long channel = jsonGetInt(body, "channel", -1);
+  if (channel < 11 || channel > 26) {
+    server.send(400, "application/json", "{\"error\":\"invalid channel\"}");
+    return;
+  }
+  // 当前 sniffer 固件不支持运行时切换通道，返回 501 提示
+  String json = "{\"error\":\"channel_switch_unsupported\","
+                "\"message\":\"当前 sniffer 固件不支持运行时切换通道，"
+                "请重新烧录对应通道的 sniffer 固件\"}";
+  server.send(501, "application/json", json);
+  Serial.printf("Sniffer channel switch rejected (unsupported): %d\n", (int)channel);
+}
+
+// GET /api/sniffer/status  sniffer 状态 + 丢包统计
+//   返回: {"active":true,"channel":11,"baud":115200,
+//          "buffer_used":4096,"buffer_size":32768,
+//          "bytes_received":102400,"bytes_sent":98304,
+//          "dropped_bytes":4096,"drop_count":4,"uptime":60}
+void handleSnifferStatus() {
+  uint32_t used = (g_sniffer_head >= g_sniffer_tail)
+      ? (g_sniffer_head - g_sniffer_tail)
+      : (SNIFFER_BUFFER_SIZE - g_sniffer_tail + g_sniffer_head);
+  uint32_t uptime = (g_state == STATE_SNIFFING)
+      ? (uint32_t)((millis() - g_sniffer_start_ms) / 1000) : 0;
+  String json = "{";
+  json += "\"active\":" + String(g_state == STATE_SNIFFING ? "true" : "false");
+  json += ",\"channel\":" + String(g_sniffer_channel);
+  json += ",\"baud\":" + String(g_sniffer_baud);
+  json += ",\"buffer_used\":" + String(used);
+  json += ",\"buffer_size\":" + String(SNIFFER_BUFFER_SIZE);
+  json += ",\"bytes_received\":" + String(g_sniffer_total_rx);
+  json += ",\"bytes_sent\":" + String(g_sniffer_total_sent);
+  json += ",\"dropped_bytes\":" + String(g_sniffer_drop_bytes);
+  json += ",\"drop_count\":" + String(g_sniffer_drop_count);
+  json += ",\"uptime\":" + String(uptime);
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+// GET /api/sniffer/stream  HTTP chunked 流式传输 sniffer 原始字节
+//   持续推送，客户端断开后保持 sniffer 运行（允许多次连接）
+//   仅允许 1 个客户端同时连接，避免多客户端分流数据
+void handleSnifferStream() {
+  if (g_state != STATE_SNIFFING) {
+    server.send(409, "application/json", "{\"error\":\"not sniffing\"}");
+    return;
+  }
+  if (g_sniffer_client_active) {
+    server.send(409, "application/json", "{\"error\":\"stream busy\"}");
+    return;
+  }
+  WiFiClient client = server.client();
+  g_sniffer_client = client;
+  g_sniffer_client_active = true;
+  // 发送 chunked 响应头
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: application/octet-stream");
+  client.println("Transfer-Encoding: chunked");
+  client.println("Cache-Control: no-cache");
+  client.println("Connection: keep-alive");
+  client.println();
+
+  uint8_t buf[1024];
+  // 循环推送：先读串口入缓冲 → 读缓冲 → chunked 写客户端
+  // 注意：此 handler 阻塞期间 loop() 不执行，必须在循环内自行读串口，
+  // 否则数据丢失。缓冲在此充当串口与 WiFi 之间的解耦队列。
+  // 使用逐字节 Serial.read()（与 handleMonitoring 一致，避免 readBytes 的潜在问题）
+  while (client.connected() && g_state == STATE_SNIFFING) {
+    // 1. 从串口读取数据入缓冲（逐字节读取，与 handleSniffing 一致）
+    handleSniffing();
+    // 2. 从缓冲读取并 chunked 发送
+    size_t n = snifferRead(buf, sizeof(buf));
+    if (n > 0) {
+      // chunked 格式: <hex长度>\r\n<data>\r\n
+      client.printf("%X\r\n", (unsigned int)n);
+      size_t written = 0;
+      while (written < n) {
+        int w = client.write(buf + written, n - written);
+        if (w > 0) {
+          written += w;
+        } else {
+          delay(1);
+        }
+        yield();
+      }
+      client.print("\r\n");
+      g_sniffer_total_sent += n;
+    } else {
+      // 无数据，短暂等待避免 busy-loop
+      delay(5);
+    }
+    yield();  // 喂狗 + WiFi 任务
+  }
+  // 结束 chunk
+  if (client.connected()) {
+    client.println("0\r\n\r\n");
+  }
+  g_sniffer_client_active = false;
+  Serial.println("Sniffer stream client disconnected");
+}
+
 void initHttpRoutes() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/style.css", HTTP_GET, handleCss);
@@ -1593,6 +1916,11 @@ void initHttpRoutes() {
   server.on("/api/stop", HTTP_POST, handleStop);
   server.on("/api/reset", HTTP_POST, handleResetCC2530);
   server.on("/api/monitor/buffer", HTTP_GET, handleMonitorBuffer);
+  // Sniffer 抓包接口（详见 CCLoader_Sniffer抓包改造需求.md）
+  server.on("/api/sniffer/start", HTTP_POST, handleSnifferStart);
+  server.on("/api/sniffer/channel", HTTP_POST, handleSnifferChannel);
+  server.on("/api/sniffer/stream", HTTP_GET, handleSnifferStream);
+  server.on("/api/sniffer/status", HTTP_GET, handleSnifferStatus);
   server.on("/api/files", HTTP_GET, handleFiles);
   // /api/files/{name} - 用正则通配符
   server.on(UriRegex("^/api/files/([^/]+)$"), HTTP_DELETE, handleDeleteFile);
@@ -1710,6 +2038,10 @@ void loop() {
       break;
     case STATE_MONITORING:
       handleMonitoring();
+      break;
+    case STATE_SNIFFING:
+      // 流式传输在 handleSnifferStream 内同步循环，这里仅在无客户端时读串口入缓冲
+      handleSniffing();
       break;
   }
 }

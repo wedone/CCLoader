@@ -1803,7 +1803,7 @@ const char config_json[] PROGMEM = R"=====(
 )=====";
 const size_t config_json_len = 90;
 
-// help.md (12895 bytes, text/markdown; charset=utf-8)
+// help.md (16156 bytes, text/markdown; charset=utf-8)
 const char help_md[] PROGMEM = R"=====(
 # CCLoader WebUI 帮助
 
@@ -1998,11 +1998,15 @@ hex2bin('CC2530.hex', 'CC2530.bin')
 | POST | /api/backup | 备份固件（读取 Flash 保存到 LittleFS，生成 .bin 文件） |
 | POST | /api/monitor | 开始监控（body: {baud,auto_reset}） |
 | GET  | /api/monitor/buffer?since=N | 获取日志（断点续传） |
-| POST | /api/stop | 停止监控 |
+| POST | /api/stop | 停止监控 / 停止抓包 |
 | POST | /api/reset | 复位 CC2530（GPIO5/RESETn，监控中也可用） |
 | POST | /api/reboot | 重启 ESP8266 |
 | GET  | /api/wifi/scan | 扫描 WiFi |
 | POST | /api/wifi/connect | 连接 WiFi（body: {ssid,password}） |
+| POST | /api/sniffer/start | 启动 Zigbee 抓包（body: {channel,baud}，必须 IDLE） |
+| POST | /api/sniffer/channel | 切换抓包通道（body: {channel}，必须 SNIFFING） |
+| GET  | /api/sniffer/stream | 流式获取抓包数据（HTTP chunked，二进制透传） |
+| GET  | /api/sniffer/status | 抓包状态 + 丢包统计 |
 
 ---
 
@@ -2016,12 +2020,14 @@ curl -N http://10.0.0.147:81/
 
 事件类型（`data:` 后为 JSON）：
 
-- `{"type":"status","state":"idle|burning|monitoring"}`
+- `{"type":"status","state":"idle|burning|monitoring|sniffing"}`
 - `{"type":"burn_progress","percent":50,"current_block":256,"total_blocks":512,"done":false,"error":""}`
 - `{"type":"monitor_start","baud":115200}`
 - `{"type":"monitor_data","data":"<base64>"}`
 - `{"type":"monitor_reset"}` — CC2530 已复位（监控中），前端清空日志区
 - `{"type":"monitor_stop"}`
+- `{"type":"sniffer_start","channel":11}` — 进入抓包模式
+- `{"type":"sniffer_stop"}` — 退出抓包模式
 - `{"type":"wifi_connected","ssid":"...","ip":"192.168.x.x"}`
 - `{"type":"wifi_connect_failed","ssid":"..."}`
 
@@ -2094,7 +2100,70 @@ A: 烧录成功后延时 3 秒自动调用 /api/reboot 重启 ESP8266，可释�
 **Q: 如何清除 CC2530 的 Zigbee 配网信息（不擦除固件）？**
 A: 在 WebUI 烧录区点击"清除配网"按钮，或直接调用 `POST /api/nvreset`。流程：读取 CC2530 全部 Flash 到临时文件 → 清除尾部 NV 区域（最后 4KB）→ 全片擦除 → 写回。固件保留，仅清除配网信息，设备需要重新加入 Zigbee 网络。整个过程约 2 分钟，进度通过进度条显示。
 
+---
+
+## 8. Zigbee 抓包功能（SNIFFING 模式）
+
+CCLoader 可作为 Zigbee 抓包转发器：CC2530 烧录 ZBOSS sniffer 固件后，通过 WiFi 实时转发 IEEE 802.15.4 帧到 PC，生成 pcap 文件供 Wireshark 分析。
+
+### 8.1 工作原理
+
+```
+CC2530 (sniffer固件) ──P0_3 UART0 TX──→ ESP8266 GPIO3 (RX)
+                                          │ 32KB 环形缓冲
+                                          ▼ HTTP chunked
+                                    /api/sniffer/stream
+                                          │
+                                          ▼ WiFi
+                                    PC Python 脚本 → .pcap → Wireshark
+```
+
+硬件零改动：GPIO3 (RX) ← P0_3 (UART0 TX) 这根线已接好（与监控共用）。CC2530 需先烧录 ZBOSS sniffer 固件（非 HGZBSwitch）。
+
+### 8.2 抓包流程（Agent 自动化）
+
+```bash
+IP=10.0.0.147
+# 1. 启动 sniffer（通道 11，波特率 115200）
+curl -s -X POST http://$IP/api/sniffer/start \
+  -H "Content-Type: application/json" -d '{"channel":11}'
+# 返回: {"success":true,"channel":11,"baud":115200,"buffer_size":16384}
+
+# 2. 检查状态
+curl -s http://$IP/api/sniffer/status
+# 返回: {"active":true,"channel":11,"buffer_used":0,"bytes_received":0,...}
+
+# 3. 流式接收（阻塞，Ctrl+C 停止）
+curl http://$IP/api/sniffer/stream -o capture.raw
+
+# 4. 停止 sniffer（stream 断开后才能处理）
+curl -s -X POST http://$IP/api/stop
+```
+
+### 8.3 PC 端 pcap 生成
+
+ESP8266 只透传 ZBOSS 原始字节，PC 端 Python 脚本解析 ZBOSS 包头、提取 IEEE 802.15.4 帧、生成 pcap（DLT=230）。参考脚本及完整协议见 `CCLoader_Sniffer抓包改造需求.md`。
+
+### 8.4 通道切换
+
+**当前 sniffer 固件不支持运行时切换通道**。`/api/sniffer/channel` 接口返回 501 + `channel_switch_unsupported` 错误。如需切换通道，请重新烧录对应通道的 sniffer 固件。
+
+Zigbee 常用通道：11、15、20、25。
+
+### 8.5 丢包标记
+
+缓冲满时丢弃最旧数据，每累计 1024 字节丢弃插入一个标记包（ZBOSS 头格式，`type=0xFF`，含累计丢弃字节数）。PC 端脚本识别 `type=0xFF` 后可标记 pcap 缺口。
+
+### 8.6 注意事项
+
+- **状态互斥**：SNIFFING 与 BURNING、MONITORING 互斥，必须 IDLE 才能启动
+- **stream 阻塞**：流式传输期间 HTTP 端口被占用，`/api/stop` 等请求需等 stream 客户端断开后才能响应。PC 脚本先断开 stream 再调 `/api/stop`
+- **单客户端**：同时只允许 1 个 stream 客户端，第二个返回 409 `stream busy`
+- **CC2530 固件**：必须烧录 ZBOSS sniffer 固件（非 HGZBSwitch），波特率 115200
+- **缓冲大小**：16KB（ESP8266 RAM 限制，32KB 会导致内存不足无法启动）
+
+
 )=====";
-const size_t help_md_len = 12895;
+const size_t help_md_len = 16156;
 
 }  // namespace WebAssets
