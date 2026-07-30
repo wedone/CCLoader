@@ -6,7 +6,7 @@
 
 namespace WebAssets {
 
-// index.html (7466 bytes, text/html)
+// index.html (10145 bytes, text/html)
 const char index_html[] PROGMEM = R"=====(
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -29,6 +29,7 @@ const char index_html[] PROGMEM = R"=====(
   <nav class="tabs">
     <button class="tab-btn active" data-tab="burn">烧录</button>
     <button class="tab-btn" data-tab="monitor">监控</button>
+    <button class="tab-btn" data-tab="sniffer">抓包</button>
     <button class="tab-btn" data-tab="settings">设置</button>
     <button class="tab-btn" data-tab="help">帮助</button>
   </nav>
@@ -135,6 +136,71 @@ const char index_html[] PROGMEM = R"=====(
       </div>
     </section>
 
+    <!-- 抓包页 -->
+    <section id="tab-sniffer" class="tab-content">
+      <h2>Zigbee 抓包</h2>
+
+      <div class="card">
+        <h3>控制</h3>
+        <label>通道:
+          <select id="sniffer-channel-select">
+            <option value="11" selected>11</option>
+            <option value="12">12</option>
+            <option value="13">13</option>
+            <option value="14">14</option>
+            <option value="15">15</option>
+            <option value="16">16</option>
+            <option value="17">17</option>
+            <option value="18">18</option>
+            <option value="19">19</option>
+            <option value="20">20</option>
+            <option value="21">21</option>
+            <option value="22">22</option>
+            <option value="23">23</option>
+            <option value="24">24</option>
+            <option value="25">25</option>
+            <option value="26">26</option>
+          </select>
+        </label>
+        <button id="sniffer-start-btn" class="btn primary">开始抓包</button>
+        <button id="sniffer-stop-btn" class="btn" disabled>停止</button>
+        <button id="sniffer-channel-switch-btn" class="btn" disabled>切换通道</button>
+        <label><input type="checkbox" id="sniffer-detail-check"> 详细解析</label>
+        <div class="hint">CC2530 需烧录 ZBOSS sniffer 固件（波特率 115200）。详细解析在浏览器端解码 IEEE 802.15.4 帧头。</div>
+      </div>
+
+      <div class="card">
+        <div class="toolbar">
+          <button id="sniffer-clear-btn" class="btn" disabled>清空</button>
+          <button id="sniffer-download-btn" class="btn" disabled>下载 pcap</button>
+          <span class="sniffer-stats">
+            <span>包数: <span id="sniffer-pkt-count">0</span></span>
+            <span>接收: <span id="sniffer-rx">0</span> B</span>
+            <span>丢弃: <span id="sniffer-drop">0</span> B</span>
+            <span id="sniffer-state">未开始</span>
+          </span>
+        </div>
+
+        <div class="pkt-list-wrap">
+          <table class="pkt-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>时间</th>
+                <th>CH</th>
+                <th>长度</th>
+                <th>类型</th>
+                <th>CRC</th>
+                <th>hex 预览</th>
+                <th>解析</th>
+              </tr>
+            </thead>
+            <tbody id="sniffer-pkt-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
     <!-- 设置页 -->
     <section id="tab-settings" class="tab-content">
       <h2>设置</h2>
@@ -154,26 +220,19 @@ const char index_html[] PROGMEM = R"=====(
       </div>
 
       <div class="card">
-        <h3>默认监控</h3>
-        <label>波特率:
-          <select id="default-baud-select">
-            <option value="9600">9600</option>
-            <option value="19200">19200</option>
-            <option value="38400">38400</option>
-            <option value="57600">57600</option>
-            <option value="115200" selected>115200</option>
-            <option value="230400">230400</option>
-          </select>
-        </label>
-        <button id="save-monitor-btn" class="btn primary">保存</button>
+        <h3>设备名称</h3>
+        <label>主机名: <input type="text" id="device-name-input" placeholder="如：烧录器A（显示在浏览器标签页）" maxlength="32"></label>
+        <button id="save-device-name-btn" class="btn primary">保存</button>
+        <div class="hint">修改后浏览器标签页标题立即更新，用于区分多个烧录器</div>
       </div>
 
       <div class="card">
         <h3>设备信息</h3>
-        <div>固件版本: CCLoader-WebUI v1.3</div>
+        <div>固件版本: <span id="firmware-version">v1.5</span></div>
         <div>运行时长: <span id="uptime">-</span></div>
         <div>WiFi 信号: <span id="rssi">-</span> dBm</div>
         <div>IP 地址: <span id="device-ip">-</span></div>
+        <div>Flash 占用: <span id="flash-usage">-</span></div>
         <button id="reboot-btn" class="btn danger">重启 ESP8266</button>
       </div>
     </section>
@@ -183,6 +242,7 @@ const char index_html[] PROGMEM = R"=====(
       <h2>帮助</h2>
       <div class="card">
         <div class="hint">本页内容由 <code>/api/help</code> 返回，AI Agent 调用同一接口获取。修改 <code>data/help.md</code> 后重新生成 <code>web_assets.h</code> 即可同步更新。</div>
+        <button id="help-copy-btn" class="btn">一键复制原文</button>
       </div>
       <div class="card">
         <div id="help-content" class="help-md">加载中...</div>
@@ -190,14 +250,15 @@ const char index_html[] PROGMEM = R"=====(
     </section>
   </main>
 
+  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
 
 )=====";
-const size_t index_html_len = 7466;
+const size_t index_html_len = 10145;
 
-// style.css (10404 bytes, text/css)
+// style.css (12261 bytes, text/css)
 const char style_css[] PROGMEM = R"=====(
 /* CCLoader WebUI - 暗色主题响应式样式 */
 
@@ -257,6 +318,7 @@ header {
 .badge.idle    { background: var(--success); color: #fff; }
 .badge.burning { background: var(--warning); color: #fff; }
 .badge.monitor { background: var(--monitor); color: #fff; }
+.badge.sniffing { background: #9c27b0; color: #fff; }
 
 .tabs {
   display: flex;
@@ -346,6 +408,7 @@ select:focus {
 .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
 .btn.primary:hover:not(:disabled) { background: var(--primary-hover); }
 .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn.download-btn { background: var(--success); border-color: var(--success); color: #fff; }
 
 .progress-container {
   margin: 12px 0;
@@ -406,6 +469,7 @@ select:focus {
 .file-item .file-info { display: flex; gap: 12px; align-items: center; }
 .file-item .file-name { cursor: pointer; color: var(--primary); }
 .file-item .file-meta { color: var(--text-muted); font-size: 12px; }
+.file-item .file-btn-group { display: flex; gap: 8px; flex-shrink: 0; }
 
 /* WiFi 配网 */
 .hint { color: var(--text-muted); font-size: 12px; margin-top: 6px; }
@@ -644,10 +708,77 @@ select:focus {
 .ota-preview .addr-ok { color: var(--success); }
 .ota-preview .addr-warn { color: var(--warning); }
 
-)=====";
-const size_t style_css_len = 10404;
+/* 抓包页样式 */
+.sniffer-stats {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+  align-items: center;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
 
-// app.js (41087 bytes, application/javascript)
+.pkt-list-wrap {
+  max-height: 480px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-top: 12px;
+  background: #000;
+}
+
+.pkt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: Consolas, Monaco, "Courier New", monospace;
+  font-size: 11px;
+}
+
+.pkt-table thead {
+  position: sticky;
+  top: 0;
+  background: var(--bg-input);
+  z-index: 1;
+}
+
+.pkt-table th {
+  padding: 6px 8px;
+  text-align: left;
+  color: var(--text);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.pkt-table td {
+  padding: 4px 8px;
+  color: #d4d4d4;
+  border-bottom: 1px solid #1a1d23;
+  vertical-align: top;
+}
+
+.pkt-table tr:hover td { background: #0d1117; }
+
+.pkt-table td.col-idx { color: var(--text-muted); width: 40px; }
+.pkt-table td.col-time { color: var(--text-muted); width: 90px; white-space: nowrap; }
+.pkt-table td.col-ch { width: 30px; text-align: center; }
+.pkt-table td.col-len { width: 50px; text-align: right; }
+.pkt-table td.col-type { width: 70px; }
+.pkt-table td.col-crc { width: 50px; text-align: center; }
+.pkt-table td.col-hex { max-width: 280px; word-break: break-all; color: #7ec699; }
+.pkt-table td.col-detail { color: #569cd6; font-size: 10px; }
+
+.pkt-type-ok { color: var(--success); }
+.pkt-type-err { color: var(--danger); }
+.pkt-type-drop { color: var(--warning); font-weight: 600; }
+.pkt-crc-ok { color: var(--success); }
+.pkt-crc-bad { color: var(--danger); }
+
+)=====";
+const size_t style_css_len = 12261;
+
+// app.js (53842 bytes, application/javascript)
 const char app_js[] PROGMEM = R"=====(
 // CCLoader WebUI 前端逻辑
 // 使用 SSE (EventSource) 接收实时事件，无外部库依赖
@@ -709,6 +840,9 @@ function setStateBadge(state) {
   } else if (state === 'monitoring') {
     badge.classList.add('monitor');
     badge.textContent = '监控中';
+  } else if (state === 'sniffing') {
+    badge.classList.add('sniffing');
+    badge.textContent = '抓包中';
   }
 }
 
@@ -749,6 +883,12 @@ function connectSSE() {
         break;
       case 'monitor_reset':
         onMonitorReset();
+        break;
+      case 'sniffer_start':
+        onSnifferStart(msg.channel);
+        break;
+      case 'sniffer_stop':
+        onSnifferStop();
         break;
       case 'wifi_connected':
         if (msg.ip) {
@@ -1200,11 +1340,21 @@ async function refreshFileList() {
 
       const delBtn = document.createElement('button');
       delBtn.className = 'btn danger delete-btn';
-      delBtn.dataset.name = f.name;  // dataset 自动转义
+      delBtn.dataset.name = f.name;
       delBtn.textContent = '删除';
 
+      const dlBtn = document.createElement('button');
+      dlBtn.className = 'btn download-btn';
+      dlBtn.dataset.name = f.name;
+      dlBtn.textContent = '下载';
+
+      const btnGroup = document.createElement('div');
+      btnGroup.className = 'file-btn-group';
+      btnGroup.appendChild(dlBtn);
+      btnGroup.appendChild(delBtn);
+
       item.appendChild(info);
-      item.appendChild(delBtn);
+      item.appendChild(btnGroup);
       list.appendChild(item);
     });
     // 选中事件
@@ -1231,6 +1381,16 @@ async function refreshFileList() {
         } else {
           alert('删除失败: ' + r.error);
         }
+      });
+    });
+    // 下载事件
+    list.querySelectorAll('.download-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const url = '/api/files/' + encodeURIComponent(btn.dataset.name);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = btn.dataset.name;
+        a.click();
       });
     });
   } catch (e) {
@@ -1490,10 +1650,19 @@ async function loadConfig() {
     const cfg = await resp.json();
     $('wifi-ssid').value = cfg.wifi_ssid || '';
     $('wifi-password').value = cfg.wifi_password || '';
-    $('default-baud-select').value = cfg.monitor_baud || 115200;
-    $('baud-select').value = cfg.monitor_baud || 115200;
+    $('device-name-input').value = cfg.device_name || '';
+    // 同步浏览器标签页标题
+    updateDocumentTitle(cfg.device_name);
   } catch (e) {
     console.error('loadConfig error:', e);
+  }
+}
+
+function updateDocumentTitle(name) {
+  if (name && name.trim()) {
+    document.title = name.trim();
+  } else {
+    document.title = 'CCLoader WebUI';
   }
 }
 
@@ -1615,16 +1784,16 @@ $('wifi-connect-btn').addEventListener('click', async () => {
   }
 });
 
-$('save-monitor-btn').addEventListener('click', async () => {
-  const cfg = { monitor_baud: parseInt($('default-baud-select').value) };
+$('save-device-name-btn').addEventListener('click', async () => {
+  const name = $('device-name-input').value.trim();
   const resp = await fetch('/api/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(cfg)
+    body: JSON.stringify({ device_name: name })
   });
   const r = await resp.json();
   if (r.success) {
-    $('baud-select').value = cfg.monitor_baud;
+    updateDocumentTitle(name);
     alert('已保存');
   } else {
     alert('保存失败: ' + r.error);
@@ -1668,6 +1837,21 @@ async function pollStatus() {
       const m = Math.floor((s.uptime % 3600) / 60);
       $('uptime').textContent = h + '时' + m + '分';
     }
+    // Flash 资源占用
+    if (s.flash) {
+      const used = (s.flash.sketch_size / 1024).toFixed(0);
+      const total = ((s.flash.sketch_size + s.flash.sketch_free) / 1024).toFixed(0);
+      const pct = (s.flash.sketch_size / (s.flash.sketch_size + s.flash.sketch_free) * 100).toFixed(1);
+      $('flash-usage').textContent = used + 'KB / ' + total + 'KB (' + pct + '%)';
+    }
+    // 版本号（从后端同步）
+    if (s.version) {
+      $('firmware-version').textContent = s.version;
+    }
+    // 设备名称（同步标签页标题，避免用户在其他设备修改后未刷新）
+    if (s.device_name !== undefined) {
+      updateDocumentTitle(s.device_name);
+    }
     if (s.monitor) {
       if (s.monitor.active && !monitorActive) {
         onMonitorStart(s.monitor.baud);
@@ -1675,106 +1859,422 @@ async function pollStatus() {
         onMonitorStop();
       }
     }
+    if (s.sniffer) {
+      if (s.sniffer.active && !snifferActive) {
+        onSnifferStart(s.sniffer.channel);
+      } else if (!s.sniffer.active && snifferActive) {
+        onSnifferStop();
+      }
+      // 同步丢包统计（stream 期间无法调用 status，这里补偿更新）
+      if (s.sniffer.active) {
+        $('sniffer-drop').textContent = s.sniffer.dropped_bytes || 0;
+      }
+    }
   } catch (e) {}
 }
 
-// ===== 轻量级 markdown → HTML 渲染（纯正则，无依赖） =====
-function renderMarkdown(text) {
-  // 先 HTML 转义
-  let html = text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-
-  // 代码块 ```...``` （必须最先处理，避免内部标记被篡改）
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-    const cls = lang ? ` class="lang-${lang}"` : '';
-    return `<pre><code${cls}>${code.trim()}</code></pre>`;
-  });
-
-  // 行内代码 `code`
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-
-  // 水平分割线
-  html = html.replace(/^---+\s*$/gm, '<hr>');
-
-  // 标题 h1-h6
-  html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
-  html = html.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
-  html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
-  html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
-  html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
-  html = html.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
-
-  // 粗体 **text** 和 *斜体*
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-
-  // 链接 [text](url)
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-
-  // 无序列表 - 开头
-  html = html.replace(/^[\s]*[-*+]\s+(.+)$/gm, '<li>$1</li>');
-
-  // 有序列表 1. 开头
-  html = html.replace(/^[\s]*\d+\.\s+(.+)$/gm, '<li>$1</li>');
-
-  // 包裹 <li> 为 <ul>/<ol>
-  html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, (match) => {
-    const lines = match.trim().split('\n');
-    // 简单判断：如果所有行都以 <li> 开头，包裹为 <ul>
-    if (lines.every(l => l.trim().startsWith('<li>'))) {
-      return '<ul>\n' + lines.join('\n') + '\n</ul>\n';
-    }
-    return match;
-  });
-
-  // 表格：| header | header | → <table>
-  html = html.replace(/^(\|.+)\n\|[\s-:|]+\|/gm, (match, headerLine) => {
-    // 取表头单元格
-    const headers = headerLine.split('|').filter(c => c.trim()).map(c => c.trim());
-    let table = '<table>\n<thead>\n<tr>\n';
-    headers.forEach(h => { table += `<th>${h}</th>\n`; });
-    table += '</tr>\n</thead>\n<tbody>\n';
-    // 将后续行追加到 tbody（由后续替换处理行内）
-    return table;
-  });
-
-  // 表格行 | cell | cell |
-  html = html.replace(/^\|(.+)\|$/gm, (match, cells) => {
-    const cols = cells.split('|').filter(c => c.trim()).map(c => c.trim());
-    // 跳过表头分隔行（已在上一步处理）
-    if (cols.every(c => /^[\s:-]+$/.test(c))) return match;
-    let row = '<tr>\n';
-    cols.forEach(c => { row += `<td>${c}</td>\n`; });
-    row += '</tr>\n';
-    return row;
-  });
-
-  // 合并表格行到 tbody，关闭 table
-  html = html.replace(/(<table>[\s\S]*?)((?:<tr>[\s\S]*?<\/tr>\n?)+)/g, (match, before, rows) => {
-    return before + rows + '</tbody>\n</table>\n';
-  });
-
-  // 段落：连续非空文本行（不含块级标签）包裹 <p>
-  html = html.replace(/^(?!<[h1-6hruolp\/]|$)(.+)$/gm, '<p>$1</p>');
-
-  // 清理多余空行
-  html = html.replace(/\n{3,}/g, '\n\n');
-
-  return html;
-}
-
-// ===== 帮助页：从 /api/help 加载 markdown 并渲染 =====
+// ===== 帮助页：从 /api/help 加载 markdown，用 marked.js（CDN）渲染 =====
+let helpRawText = '';  // 保留原文用于一键复制
 async function loadHelp() {
   try {
     const resp = await fetch('/api/help');
     const text = await resp.text();
-    $('help-content').innerHTML = renderMarkdown(text);
+    helpRawText = text;
+    // marked.js 从 CDN 加载（index.html 末尾引入）。若 CDN 加载失败则降级显示原文
+    if (typeof marked !== 'undefined' && marked.parse) {
+      $('help-content').innerHTML = marked.parse(text);
+    } else {
+      $('help-content').innerHTML = '<pre style="white-space:pre-wrap;">' +
+        text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre>';
+    }
   } catch (e) {
     $('help-content').textContent = '加载失败: ' + e.message;
   }
 }
+
+$('help-copy-btn').addEventListener('click', async () => {
+  if (!helpRawText) {
+    alert('帮助内容尚未加载');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(helpRawText);
+    alert('已复制帮助原文到剪贴板');
+  } catch (e) {
+    // 降级方案：选中文本
+    const range = document.createRange();
+    range.selectNode($('help-content'));
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+    alert('剪贴板不可用，已选中文本，请手动 Ctrl+C 复制');
+  }
+});
+
+// ===== Sniffer 抓包 =====
+// ZBOSS 协议：包头 4 字节（len, type, tail[2]）+ payload（len-4 字节）
+// type=0x00 OK / 0x01 TOO_BIG / 0x02 OVERFLOW / 0xFF 丢包标记
+// payload 最后 1 字节：CRC 状态（bit7=1 OK, bit7=0 BAD）
+let snifferActive = false;
+let snifferStreamController = null;  // AbortController
+let snifferPackets = [];  // 已解析的 IEEE 帧（用于 pcap 下载）
+let snifferPktCount = 0;
+let snifferRxBytes = 0;
+let snifferChannel = 11;
+let snifferDetailMode = false;
+let snifferStreamBuf = new Uint8Array(0);  // 流式接收缓冲
+
+function onSnifferStart(channel) {
+  if (snifferActive) return;  // 避免重复触发（SSE + pollStatus）
+  snifferActive = true;
+  snifferChannel = channel;
+  snifferPktCount = 0;
+  snifferRxBytes = 0;
+  snifferPackets = [];
+  snifferStreamBuf = new Uint8Array(0);
+  $('sniffer-pkt-tbody').innerHTML = '';
+  $('sniffer-pkt-count').textContent = '0';
+  $('sniffer-rx').textContent = '0';
+  $('sniffer-drop').textContent = '0';
+  $('sniffer-state').textContent = '抓包中 @ CH' + channel;
+  $('sniffer-start-btn').disabled = true;
+  $('sniffer-stop-btn').disabled = false;
+  $('sniffer-channel-switch-btn').disabled = false;
+  $('sniffer-clear-btn').disabled = false;
+  $('sniffer-download-btn').disabled = false;
+  // 开始流式接收（SSE 触发，此时 sniffer 已启动）
+  readSnifferStream();
+}
+
+function onSnifferStop() {
+  if (!snifferActive) return;
+  snifferActive = false;
+  if (snifferStreamController) {
+    snifferStreamController.abort();
+    snifferStreamController = null;
+  }
+  $('sniffer-state').textContent = '已停止';
+  $('sniffer-start-btn').disabled = false;
+  $('sniffer-stop-btn').disabled = true;
+  $('sniffer-channel-switch-btn').disabled = true;
+}
+
+async function readSnifferStream() {
+  if (snifferStreamController) return;  // 已有 stream 在读
+  snifferStreamController = new AbortController();
+  try {
+    const resp = await fetch('/api/sniffer/stream', { signal: snifferStreamController.signal });
+    if (!resp.ok) {
+      $('sniffer-state').textContent = 'stream 错误: ' + resp.status;
+      snifferStreamController = null;
+      return;
+    }
+    const reader = resp.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      // 追加到缓冲
+      const newBuf = new Uint8Array(snifferStreamBuf.length + value.length);
+      newBuf.set(snifferStreamBuf);
+      newBuf.set(value, snifferStreamBuf.length);
+      snifferStreamBuf = newBuf;
+      snifferRxBytes += value.length;
+      $('sniffer-rx').textContent = snifferRxBytes;
+      // 解析 ZBOSS 包
+      parseZbossPackets();
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      console.error('Sniffer stream error:', e);
+    }
+  }
+  snifferStreamController = null;
+}
+
+function parseZbossPackets() {
+  let pos = 0;
+  while (pos + 4 <= snifferStreamBuf.length) {
+    const len = snifferStreamBuf[pos];
+    // len < 5（4 字节包头 + 至少 1 字节 payload）非法；len > 127 超出 ZBOSS 协议
+    if (len < 5 || len > 127) {
+      pos++;
+      continue;
+    }
+    if (pos + len > snifferStreamBuf.length) break;  // 数据不完整，等下次
+    const type = snifferStreamBuf[pos + 1];
+    const payload = snifferStreamBuf.slice(pos + 4, pos + len);
+    handleZbossPacket(type, payload);
+    pos += len;
+  }
+  if (pos > 0) {
+    snifferStreamBuf = snifferStreamBuf.slice(pos);
+  }
+}
+
+function handleZbossPacket(type, payload) {
+  snifferPktCount++;
+  let typeStr, crcStr, hexPreview, detail = '';
+  let ieeeFrame = null;
+
+  if (type === 0xFF) {
+    // 丢包标记：payload 是 4 字节大端 dropped_bytes
+    const dropped = (payload.length >= 4)
+      ? ((payload[0] << 24) | (payload[1] << 16) | (payload[2] << 8) | payload[3]) >>> 0
+      : 0;
+    typeStr = '<span class="pkt-type-drop">DROP</span>';
+    crcStr = '-';
+    hexPreview = '丢包 ' + dropped + ' B';
+  } else if (type === 0x00) {
+    typeStr = '<span class="pkt-type-ok">OK</span>';
+    // payload 最后 1 字节是 CRC 状态
+    const crcByte = payload.length > 0 ? payload[payload.length - 1] : 0;
+    crcStr = (crcByte & 0x80) ? '<span class="pkt-crc-ok">OK</span>' : '<span class="pkt-crc-bad">BAD</span>';
+    // IEEE 802.15.4 帧（移除最后 1 字节 CRC 状态）
+    ieeeFrame = payload.slice(0, payload.length - 1);
+    hexPreview = bytesToHex(ieeeFrame, 32);
+    if (snifferDetailMode) {
+      detail = parseIeee802154Frame(ieeeFrame);
+    }
+    snifferPackets.push(ieeeFrame);
+  } else if (type === 0x01) {
+    typeStr = '<span class="pkt-type-err">TOO_BIG</span>';
+    crcStr = '-';
+    hexPreview = bytesToHex(payload, 32);
+  } else if (type === 0x02) {
+    typeStr = '<span class="pkt-type-err">OVF</span>';
+    crcStr = '-';
+    hexPreview = bytesToHex(payload, 32);
+  } else {
+    typeStr = '<span class="pkt-type-err">0x' + type.toString(16) + '</span>';
+    crcStr = '-';
+    hexPreview = bytesToHex(payload, 32);
+  }
+
+  appendPacketRow(snifferPktCount, snifferChannel, payload.length, typeStr, crcStr, hexPreview, detail);
+  $('sniffer-pkt-count').textContent = snifferPktCount;
+}
+
+function bytesToHex(bytes, maxLen) {
+  let hex = '';
+  const n = Math.min(bytes.length, maxLen);
+  for (let i = 0; i < n; i++) {
+    hex += bytes[i].toString(16).padStart(2, '0') + ' ';
+  }
+  if (bytes.length > maxLen) hex += '...';
+  return hex.trim();
+}
+
+// IEEE 802.15.4 帧头解析（详细解析模式）
+function parseIeee802154Frame(frame) {
+  if (frame.length < 3) return '';
+  const fc = frame[0] | (frame[1] << 8);
+  const frameType = fc & 0x07;
+  const dstAddrMode = (fc >> 10) & 0x03;
+  const srcAddrMode = (fc >> 14) & 0x03;
+  const panIdComp = (fc >> 6) & 0x01;
+  const secEnabled = (fc >> 3) & 0x01;
+  const ackReq = (fc >> 5) & 0x01;
+
+  const typeNames = ['Beacon', 'Data', 'Ack', 'MAC_Cmd'];
+  let detail = typeNames[frameType] || 'Type' + frameType;
+  if (secEnabled) detail += ' [SEC]';
+  if (ackReq) detail += ' [AR]';
+
+  // Ack 帧只有 2 字节 FC + 1 字节 Seq
+  if (frameType === 2) {
+    return detail + ' seq=' + frame[2].toString(16).padStart(2, '0');
+  }
+
+  let pos = 3;  // FC(2) + Seq(1)
+
+  // 目的地址
+  if (dstAddrMode !== 0 && pos + 2 <= frame.length) {
+    const dstPan = frame[pos] | (frame[pos + 1] << 8);
+    pos += 2;
+    detail += ' dPAN=' + dstPan.toString(16).padStart(4, '0');
+    if (dstAddrMode === 2 && pos + 2 <= frame.length) {
+      const dstAddr = frame[pos] | (frame[pos + 1] << 8);
+      pos += 2;
+      detail += ' dst=' + dstAddr.toString(16).padStart(4, '0');
+    } else if (dstAddrMode === 3 && pos + 8 <= frame.length) {
+      let dstAddr = '';
+      for (let i = 7; i >= 0; i--) dstAddr += frame[pos + i].toString(16).padStart(2, '0');
+      pos += 8;
+      detail += ' dst=' + dstAddr;
+    }
+  }
+
+  // 源地址
+  if (srcAddrMode !== 0) {
+    if (panIdComp === 0 && pos + 2 <= frame.length) {
+      const srcPan = frame[pos] | (frame[pos + 1] << 8);
+      pos += 2;
+      detail += ' sPAN=' + srcPan.toString(16).padStart(4, '0');
+    }
+    if (srcAddrMode === 2 && pos + 2 <= frame.length) {
+      const srcAddr = frame[pos] | (frame[pos + 1] << 8);
+      pos += 2;
+      detail += ' src=' + srcAddr.toString(16).padStart(4, '0');
+    } else if (srcAddrMode === 3 && pos + 8 <= frame.length) {
+      let srcAddr = '';
+      for (let i = 7; i >= 0; i--) srcAddr += frame[pos + i].toString(16).padStart(2, '0');
+      pos += 8;
+      detail += ' src=' + srcAddr;
+    }
+  }
+
+  return detail;
+}
+
+function appendPacketRow(idx, ch, len, typeStr, crcStr, hexPreview, detail) {
+  const tbody = $('sniffer-pkt-tbody');
+  const tr = document.createElement('tr');
+  const now = new Date();
+  const timeStr = pad(now.getHours(), 2) + ':' + pad(now.getMinutes(), 2) + ':' +
+                  pad(now.getSeconds(), 2) + '.' + pad(now.getMilliseconds(), 3);
+  tr.innerHTML = '<td class="col-idx">' + idx + '</td>' +
+    '<td class="col-time">' + timeStr + '</td>' +
+    '<td class="col-ch">' + ch + '</td>' +
+    '<td class="col-len">' + len + '</td>' +
+    '<td class="col-type">' + typeStr + '</td>' +
+    '<td class="col-crc">' + crcStr + '</td>' +
+    '<td class="col-hex">' + hexPreview + '</td>' +
+    '<td class="col-detail">' + detail + '</td>';
+  tbody.appendChild(tr);
+  // 限制 2000 行避免内存溢出
+  while (tbody.children.length > 2000) {
+    tbody.removeChild(tbody.firstChild);
+    // 同步移除 snifferPackets（保持索引一致）
+    if (snifferPackets.length > 0) snifferPackets.shift();
+  }
+  // 自动滚动到底部
+  const wrap = tbody.parentElement.parentElement;
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+function clearSnifferPackets() {
+  snifferPackets = [];
+  snifferPktCount = 0;
+  $('sniffer-pkt-tbody').innerHTML = '';
+  $('sniffer-pkt-count').textContent = '0';
+}
+
+function downloadPcap() {
+  // pcap 全局头（24 字节，DLT_IEEE802_15_4_NOFCS=230）
+  const header = new Uint8Array(24);
+  const dv = new DataView(header.buffer);
+  dv.setUint32(0, 0xa1b2c3d4, true);   // magic（小端）
+  dv.setUint16(4, 2, true);            // version_major
+  dv.setUint16(6, 4, true);            // version_minor
+  dv.setInt32(8, 0, true);             // thiszone
+  dv.setUint32(12, 0, true);           // sigfigs
+  dv.setUint32(16, 65535, true);       // snaplen
+  dv.setUint32(20, 230, true);         // dlt
+
+  const parts = [header];
+  const baseSec = Math.floor(Date.now() / 1000);
+  let usec = 0;
+  for (const pkt of snifferPackets) {
+    const recHeader = new Uint8Array(16);
+    const recDv = new DataView(recHeader.buffer);
+    recDv.setUint32(0, baseSec, true);           // ts_sec
+    recDv.setUint32(4, usec, true);              // ts_usec
+    recDv.setUint32(8, pkt.length, true);        // caplen
+    recDv.setUint32(12, pkt.length, true);       // origlen
+    parts.push(recHeader);
+    parts.push(pkt);
+    usec = (usec + 1000) % 1000000;  // 模拟时间递增
+  }
+
+  const blob = new Blob(parts, { type: 'application/octet-stream' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'capture_' + Date.now() + '.pcap';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+$('sniffer-start-btn').addEventListener('click', async () => {
+  const channel = parseInt($('sniffer-channel-select').value);
+  $('sniffer-start-btn').disabled = true;
+  try {
+    const resp = await fetch('/api/sniffer/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel: channel, baud: 115200 })
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      alert('启动失败: ' + (data.error || resp.status));
+      $('sniffer-start-btn').disabled = false;
+      return;
+    }
+    // 等 SSE sniffer_start 事件触发 onSnifferStart（避免重复启动 stream）
+  } catch (e) {
+    alert('启动失败: ' + e.message);
+    $('sniffer-start-btn').disabled = false;
+  }
+});
+
+$('sniffer-stop-btn').addEventListener('click', async () => {
+  // 先 abort stream，否则 /api/stop 无法响应（HTTP 单线程阻塞）
+  if (snifferStreamController) {
+    snifferStreamController.abort();
+    snifferStreamController = null;
+  }
+  try {
+    await fetch('/api/stop', { method: 'POST' });
+  } catch (e) {}
+  onSnifferStop();
+});
+
+$('sniffer-channel-switch-btn').addEventListener('click', async () => {
+  const channel = parseInt($('sniffer-channel-select').value);
+  if (channel === snifferChannel) {
+    alert('当前已是通道 ' + channel);
+    return;
+  }
+  // 先 abort stream，否则 /api/sniffer/channel 无法响应
+  if (snifferStreamController) {
+    snifferStreamController.abort();
+    snifferStreamController = null;
+  }
+  try {
+    const resp = await fetch('/api/sniffer/channel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel: channel })
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      alert('切换通道失败: ' + (data.error || data.message || resp.status));
+      return;
+    }
+    snifferChannel = channel;
+    $('sniffer-state').textContent = '抓包中 @ CH' + channel;
+    // 清空流缓冲（避免残留数据污染新通道）
+    snifferStreamBuf = new Uint8Array(0);
+    // 重新连接 stream
+    readSnifferStream();
+  } catch (e) {
+    alert('切换通道失败: ' + e.message);
+  }
+});
+
+$('sniffer-clear-btn').addEventListener('click', () => {
+  clearSnifferPackets();
+});
+
+$('sniffer-download-btn').addEventListener('click', () => {
+  if (snifferPackets.length === 0) {
+    alert('没有可下载的包');
+    return;
+  }
+  downloadPcap();
+});
+
+$('sniffer-detail-check').addEventListener('change', (e) => {
+  snifferDetailMode = e.target.checked;
+});
 
 // ===== 初始化 =====
 function init() {
@@ -1789,7 +2289,7 @@ function init() {
 init();
 
 )=====";
-const size_t app_js_len = 41087;
+const size_t app_js_len = 53842;
 
 // config.json (90 bytes, application/json)
 const char config_json[] PROGMEM = R"=====(
@@ -1803,12 +2303,12 @@ const char config_json[] PROGMEM = R"=====(
 )=====";
 const size_t config_json_len = 90;
 
-// help.md (16156 bytes, text/markdown; charset=utf-8)
+// help.md (17216 bytes, text/markdown; charset=utf-8)
 const char help_md[] PROGMEM = R"=====(
 # CCLoader WebUI 帮助
 
 > NodeMCU ESP8266 + CC2530 烧录/监控一体机。本文档由 `/api/help` 返回，WebUI 帮助页与 AI Agent 共用同一份内容。
-> 固件版本: CCLoader-WebUI v1.1
+> 固件版本: v1.5
 
 ---
 
@@ -2074,7 +2574,86 @@ curl -F "image=@.pio/build/nodemcuv2/firmware.bin" http://10.0.0.147/update
 
 ---
 
-## 7. 常见问题
+## 7. Zigbee 抓包功能（SNIFFING 模式）
+
+CCLoader 可作为 Zigbee 抓包转发器：CC2530 烧录 ZBOSS sniffer 固件后，通过 WiFi 实时转发 IEEE 802.15.4 帧到 PC，生成 pcap 文件供 Wireshark 分析。
+
+### 7.1 工作原理
+
+```
+CC2530 (sniffer固件) ──P0_3 UART0 TX──→ ESP8266 GPIO3 (RX)
+                                          │ 32KB 环形缓冲
+                                          ▼ HTTP chunked
+                                    /api/sniffer/stream
+                                          │
+                                          ▼ WiFi
+                                    PC Python 脚本 → .pcap → Wireshark
+```
+
+硬件零改动：GPIO3 (RX) ← P0_3 (UART0 TX) 这根线已接好（与监控共用）。CC2530 需先烧录 ZBOSS sniffer 固件（非 HGZBSwitch）。
+
+**两种使用方式**：
+- **WebUI 抓包页**（浏览器可视化）：WebUI "抓包"标签页，支持通道选择、实时包列表（hex + 帧类型 + CRC 状态）、详细解析（IEEE 802.15.4 帧头：帧类型/PAN/地址）、pcap 下载。适合快速查看和调试。
+- **API 流式接收**（PC 脚本自动化）：`/api/sniffer/stream` 二进制透传，PC 端 Python 脚本解析 ZBOSS 协议生成 pcap。适合长时间抓包和 Wireshark 分析。
+
+> WebUI 和 API 互斥（stream 单客户端），不能同时使用。
+
+### 7.2 抓包流程（Agent 自动化）
+
+```bash
+IP=10.0.0.147
+# 1. 启动 sniffer（通道 11，波特率 115200）
+curl -s -X POST http://$IP/api/sniffer/start \
+  -H "Content-Type: application/json" -d '{"channel":11}'
+# 返回: {"success":true,"channel":11,"baud":115200,"buffer_size":16384}
+
+# 2. 检查状态
+curl -s http://$IP/api/sniffer/status
+# 返回: {"active":true,"channel":11,"buffer_used":0,"bytes_received":0,...}
+
+# 3. 流式接收（阻塞，Ctrl+C 停止）
+curl http://$IP/api/sniffer/stream -o capture.raw
+
+# 4. 停止 sniffer（stream 断开后才能处理）
+curl -s -X POST http://$IP/api/stop
+```
+
+### 7.3 PC 端 pcap 生成
+
+ESP8266 只透传 ZBOSS 原始字节，PC 端 Python 脚本解析 ZBOSS 包头、提取 IEEE 802.15.4 帧、生成 pcap（DLT=230）。参考脚本及完整协议见 `CCLoader_Sniffer抓包改造需求.md`。
+
+### 7.4 通道切换
+
+**启动时指定通道**：`POST /api/sniffer/start` 支持 `channel` 参数（11-26），默认 11。若请求通道 ≠ 11，ESP8266 会在 sniffer 启动后通过串口发送 1 字节通道号切换（ZBOSS 协议下行）。
+
+**运行时切换通道**：`POST /api/sniffer/channel` body `{"channel":15}` 发送 1 字节通道号给 sniffer 固件，切换后清空缓冲。
+
+```bash
+# 切换到通道 15
+curl -s -X POST http://$IP/api/sniffer/channel \
+  -H "Content-Type: application/json" -d '{"channel":15}'
+# 返回: {"success":true,"channel":15}
+```
+
+> **注意**：stream 客户端连接期间 HTTP 单线程阻塞，本接口无法响应。PC 脚本应先断开 stream 再调本接口切换通道，然后重新连接 stream。
+
+Zigbee 常用通道：11、15、20、25。
+
+### 7.5 丢包标记
+
+缓冲满时丢弃最旧数据，每累计 1024 字节丢弃插入一个标记包（ZBOSS 头格式，`type=0xFF`，含累计丢弃字节数）。PC 端脚本识别 `type=0xFF` 后可标记 pcap 缺口。
+
+### 7.6 注意事项
+
+- **状态互斥**：SNIFFING 与 BURNING、MONITORING 互斥，必须 IDLE 才能启动
+- **stream 阻塞**：流式传输期间 HTTP 端口被占用，`/api/stop` 等请求需等 stream 客户端断开后才能响应。PC 脚本先断开 stream 再调 `/api/stop`
+- **单客户端**：同时只允许 1 个 stream 客户端，第二个返回 409 `stream busy`
+- **CC2530 固件**：必须烧录 ZBOSS sniffer 固件（非 HGZBSwitch），波特率 115200
+- **缓冲大小**：16KB（ESP8266 RAM 限制，32KB 会导致内存不足无法启动）
+
+---
+
+## 8. 常见问题
 
 **Q: 烧录 ESP8266 时报 "Timed out waiting for packet header"？**
 A: CC2530 的 TX 线干扰了 ESP8266 GPIO3 (RX)。烧录前先拔掉 CC2530 P0_3 → ESP8266 RX 这根线，烧完再插回。
@@ -2100,70 +2679,8 @@ A: 烧录成功后延时 3 秒自动调用 /api/reboot 重启 ESP8266，可释�
 **Q: 如何清除 CC2530 的 Zigbee 配网信息（不擦除固件）？**
 A: 在 WebUI 烧录区点击"清除配网"按钮，或直接调用 `POST /api/nvreset`。流程：读取 CC2530 全部 Flash 到临时文件 → 清除尾部 NV 区域（最后 4KB）→ 全片擦除 → 写回。固件保留，仅清除配网信息，设备需要重新加入 Zigbee 网络。整个过程约 2 分钟，进度通过进度条显示。
 
----
-
-## 8. Zigbee 抓包功能（SNIFFING 模式）
-
-CCLoader 可作为 Zigbee 抓包转发器：CC2530 烧录 ZBOSS sniffer 固件后，通过 WiFi 实时转发 IEEE 802.15.4 帧到 PC，生成 pcap 文件供 Wireshark 分析。
-
-### 8.1 工作原理
-
-```
-CC2530 (sniffer固件) ──P0_3 UART0 TX──→ ESP8266 GPIO3 (RX)
-                                          │ 32KB 环形缓冲
-                                          ▼ HTTP chunked
-                                    /api/sniffer/stream
-                                          │
-                                          ▼ WiFi
-                                    PC Python 脚本 → .pcap → Wireshark
-```
-
-硬件零改动：GPIO3 (RX) ← P0_3 (UART0 TX) 这根线已接好（与监控共用）。CC2530 需先烧录 ZBOSS sniffer 固件（非 HGZBSwitch）。
-
-### 8.2 抓包流程（Agent 自动化）
-
-```bash
-IP=10.0.0.147
-# 1. 启动 sniffer（通道 11，波特率 115200）
-curl -s -X POST http://$IP/api/sniffer/start \
-  -H "Content-Type: application/json" -d '{"channel":11}'
-# 返回: {"success":true,"channel":11,"baud":115200,"buffer_size":16384}
-
-# 2. 检查状态
-curl -s http://$IP/api/sniffer/status
-# 返回: {"active":true,"channel":11,"buffer_used":0,"bytes_received":0,...}
-
-# 3. 流式接收（阻塞，Ctrl+C 停止）
-curl http://$IP/api/sniffer/stream -o capture.raw
-
-# 4. 停止 sniffer（stream 断开后才能处理）
-curl -s -X POST http://$IP/api/stop
-```
-
-### 8.3 PC 端 pcap 生成
-
-ESP8266 只透传 ZBOSS 原始字节，PC 端 Python 脚本解析 ZBOSS 包头、提取 IEEE 802.15.4 帧、生成 pcap（DLT=230）。参考脚本及完整协议见 `CCLoader_Sniffer抓包改造需求.md`。
-
-### 8.4 通道切换
-
-**当前 sniffer 固件不支持运行时切换通道**。`/api/sniffer/channel` 接口返回 501 + `channel_switch_unsupported` 错误。如需切换通道，请重新烧录对应通道的 sniffer 固件。
-
-Zigbee 常用通道：11、15、20、25。
-
-### 8.5 丢包标记
-
-缓冲满时丢弃最旧数据，每累计 1024 字节丢弃插入一个标记包（ZBOSS 头格式，`type=0xFF`，含累计丢弃字节数）。PC 端脚本识别 `type=0xFF` 后可标记 pcap 缺口。
-
-### 8.6 注意事项
-
-- **状态互斥**：SNIFFING 与 BURNING、MONITORING 互斥，必须 IDLE 才能启动
-- **stream 阻塞**：流式传输期间 HTTP 端口被占用，`/api/stop` 等请求需等 stream 客户端断开后才能响应。PC 脚本先断开 stream 再调 `/api/stop`
-- **单客户端**：同时只允许 1 个 stream 客户端，第二个返回 409 `stream busy`
-- **CC2530 固件**：必须烧录 ZBOSS sniffer 固件（非 HGZBSwitch），波特率 115200
-- **缓冲大小**：16KB（ESP8266 RAM 限制，32KB 会导致内存不足无法启动）
-
 
 )=====";
-const size_t help_md_len = 16156;
+const size_t help_md_len = 17216;
 
 }  // namespace WebAssets

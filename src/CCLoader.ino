@@ -376,7 +376,7 @@ bool sseActive[SSE_MAX_CLIENTS] = {false, false, false, false};
 struct Config {
   String wifi_ssid;
   String wifi_password;
-  uint32_t monitor_baud;
+  String device_name;  // 设备名称（浏览器标签显示）
   uint8_t verify;
 };
 Config g_config;
@@ -557,7 +557,7 @@ String urlDecode(const String& s) {
 void loadConfig() {
   g_config.wifi_ssid = "";
   g_config.wifi_password = "";
-  g_config.monitor_baud = 115200;
+  g_config.device_name = "";
   g_config.verify = 0;
 
   if (LittleFS.exists("/config.json")) {
@@ -568,17 +568,17 @@ void loadConfig() {
       f.close();
       g_config.wifi_ssid = jsonGetString(s, "wifi_ssid");
       g_config.wifi_password = jsonGetString(s, "wifi_password");
-      g_config.monitor_baud = (uint32_t)jsonGetInt(s, "monitor_baud", 115200);
+      g_config.device_name = jsonGetString(s, "device_name");
       g_config.verify = jsonGetBool(s, "verify", false) ? 1 : 0;
     }
   }
 }
 
-void saveConfig(const String& ssid, const String& pwd, uint32_t baud, uint8_t verify) {
+void saveConfig(const String& ssid, const String& pwd, const String& deviceName, uint8_t verify) {
   String json = "{\n";
   json += "  \"wifi_ssid\": \"" + jsonEscape(ssid) + "\",\n";
   json += "  \"wifi_password\": \"" + jsonEscape(pwd) + "\",\n";
-  json += "  \"monitor_baud\": " + String(baud) + ",\n";
+  json += "  \"device_name\": \"" + jsonEscape(deviceName) + "\",\n";
   json += "  \"verify\": " + String(verify ? "true" : "false") + "\n";
   json += "}\n";
   fs::File f = LittleFS.open("/config.json", "w");
@@ -646,7 +646,7 @@ bool switchToStaMode(const String& ssid, const String& pwd) {
     configTime(8 * 3600, 0, "ntp.aliyun.com", "pool.ntp.org", "time.windows.com");
     Serial.println("NTP configured (CST-8)");
     // 保存配置
-    saveConfig(ssid, pwd, g_config.monitor_baud, g_config.verify);
+    saveConfig(ssid, pwd, g_config.device_name, g_config.verify);
     g_config.wifi_ssid = ssid;
     g_config.wifi_password = pwd;
     return true;
@@ -1145,16 +1145,21 @@ size_t snifferRead(uint8_t *out, size_t max_len) {
 }
 
 // 进入 sniffer 模式
+// sniffer 固件上电默认启动通道 11（zb_sniffer_init 中 start_channel=11），
+// 启动时不发送通道号（避免 Serial.write 影响 RX），如需切换通道用 /api/sniffer/channel。
 void enterSnifferMode(uint8_t channel, uint32_t baud) {
   // 先复位 CC2530（在 Serial 切换前，确保 sniffer 固件从干净状态启动）
   // 实测：不加复位时 Serial.available() 始终返回 0（与 monitor 模式的关键差异）
-  // sniffer 固件上电自动启动通道 11，复位可确保抓包从头开始
   resetCC2530();
   // 切换 Serial 到 sniffer 波特率
   Serial.flush();
   Serial.end();
   delay(100);
   Serial.begin(baud);
+  // 等待 sniffer 固件初始化完成（zb_sniffer_init 启动默认通道 11）
+  delay(200);
+  // 清空 RX 缓冲（sniffer 启动期间可能输出了一些日志字节，避免污染 pcap）
+  while (Serial.available()) Serial.read();
   // 清空环形缓冲与统计
   g_sniffer_head = 0;
   g_sniffer_tail = 0;
@@ -1163,25 +1168,32 @@ void enterSnifferMode(uint8_t channel, uint32_t baud) {
   g_sniffer_drop_bytes = 0;
   g_sniffer_drop_count = 0;
   g_sniffer_drop_accum = 0;
+  // 注意：channel 参数仅记录用户请求的通道，实际抓包通道由 sniffer 固件决定
+  // 若 channel != 11，需在启动后调用 /api/sniffer/channel 切换
   g_sniffer_channel = channel;
   g_sniffer_baud = baud;
   g_sniffer_start_ms = millis();
   g_sniffer_client_active = false;
   g_state = STATE_SNIFFING;
   digitalWrite(LED, HIGH);
-  // 注意：不发送通道号给 CC2530。
-  // sniffer 固件已配置上电自动启动通道 11（zb_sniffer_init 中 start_channel=11）。
-  // 实测 Serial.write+flush 会导致 Serial.available() 始终返回 0（RX 失效），
-  // 原因待查（可能与 ESP8266 HardwareSerial 内部状态有关）。
-  // 如需切换通道，使用 /api/sniffer/channel 接口（仅在确有需要时调用）。
   // 通知前端
   String json = "{\"type\":\"sniffer_start\",\"channel\":" + String(channel) + "}";
   sseSend(json);
-  // 注意：此处不能用 Serial.printf/println 调试输出！
-  // 实测任何 Serial.write（含 printf/println）都会导致 ESP8266 HardwareSerial
-  // RX 状态异常，Serial.available() 始终返回 0（用户已验证 monitor 模式不写 Serial
-  // 能正常接收，sniffer 模式写 Serial.printf 后收不到数据）。
-  // 原因待查（可能与 ESP8266 HardwareSerial 双工实现有关）。
+  // 若请求通道 ≠ 默认 11，自动发送 1 字节通道号切换
+  if (channel != 11) {
+    delay(100);  // 短暂延迟确保 sniffer 已就绪
+    Serial.write(channel);
+    Serial.flush();
+    delay(200);  // 等待 sniffer 切换通道并清空 RF FIFO
+    while (Serial.available()) Serial.read();  // 清空切换期间的噪声
+    g_sniffer_head = 0;  // 清空缓冲中切换前接收的数据
+    g_sniffer_tail = 0;
+  }
+  // 历史问题说明（早期版本曾注释"Serial.write 会导致 RX 失效"）：
+  // - 曾观察到 sniffer 模式下 Serial.printf/println 调试输出后 RX 收不到数据
+  // - 现方案：仅发送 1 字节通道号（数据量小），发送后延迟 200ms + 清空 RX 缓冲
+  // - 如实测仍 RX 失效，回退方案：仅支持通道 11（sniffer 固件默认，无需 Serial.write）
+  // 注意：sniffer 模式运行期间不要用 Serial.printf/println 调试输出（数据量大可能影响 RX）
 }
 
 // 退出 sniffer 模式
@@ -1319,7 +1331,9 @@ void handleJs() {
 // 帮助文档（markdown 纯文本，AI Agent 和 WebUI 帮助页共用同一份内容）
 // 返回 text/plain + UTF-8，避免浏览器误渲染 markdown
 void handleHelp() {
-  server.send_P(200, "text/plain; charset=utf-8", WebAssets::help_md);
+  // help.md 约 17KB，跨 tailscale (PMTU 1280) 时 send_P 一次性发送会 IP 分片丢包
+  // 复用 sendChunked_P 的分块可靠写入逻辑
+  sendChunked_P("text/plain; charset=utf-8", WebAssets::help_md, WebAssets::help_md_len);
 }
 
 void handleStatus() {
@@ -1368,6 +1382,16 @@ void handleStatus() {
   json += ",\"burn_pending\":" + String(g_burn_pending ? "true" : "false");
   // 当前时间（epoch 秒，已授时为北京时间 CST-8；未授时返回 0）
   json += ",\"time\":" + String((uint32_t)time(nullptr));
+  // 设备名称（浏览器标签显示）
+  json += ",\"device_name\":\"" + jsonEscape(g_config.device_name) + "\"";
+  // 固件版本号
+  json += ",\"version\":\"v1.5\"";
+  // Flash 资源占用
+  uint32_t sketchSize = ESP.getSketchSize();
+  uint32_t sketchFree = ESP.getFreeSketchSpace();
+  json += ",\"flash\":{\"sketch_size\":" + String(sketchSize);
+  json += ",\"sketch_free\":" + String(sketchFree);
+  json += ",\"chip_size\":" + String(ESP.getFlashChipSize()) + "}";
   json += "}";
   server.send(200, "application/json", json);
 }
@@ -1376,7 +1400,7 @@ void handleGetConfig() {
   String json = "{";
   json += "\"wifi_ssid\":\"" + jsonEscape(g_config.wifi_ssid) + "\"";
   json += ",\"wifi_password\":\"" + jsonEscape(g_config.wifi_password) + "\"";
-  json += ",\"monitor_baud\":" + String(g_config.monitor_baud);
+  json += ",\"device_name\":\"" + jsonEscape(g_config.device_name) + "\"";
   json += ",\"verify\":" + String(g_config.verify ? "true" : "false");
   json += "}";
   server.send(200, "application/json", json);
@@ -1387,17 +1411,17 @@ void handlePostConfig() {
   // 合并保存：只更新请求中出现的字段
   String ssid = g_config.wifi_ssid;
   String pwd = g_config.wifi_password;
-  uint32_t baud = g_config.monitor_baud;
+  String deviceName = g_config.device_name;
   uint8_t verify = g_config.verify;
   // 通过查找 "key": 是否存在判断字段是否出现
   if (body.indexOf("\"wifi_ssid\"") >= 0)     ssid = jsonGetString(body, "wifi_ssid");
   if (body.indexOf("\"wifi_password\"") >= 0) pwd = jsonGetString(body, "wifi_password");
-  if (body.indexOf("\"monitor_baud\"") >= 0)  baud = (uint32_t)jsonGetInt(body, "monitor_baud", 115200);
+  if (body.indexOf("\"device_name\"") >= 0)   deviceName = jsonGetString(body, "device_name");
   if (body.indexOf("\"verify\"") >= 0)        verify = jsonGetBool(body, "verify", false) ? 1 : 0;
-  saveConfig(ssid, pwd, baud, verify);
+  saveConfig(ssid, pwd, deviceName, verify);
   g_config.wifi_ssid = ssid;
   g_config.wifi_password = pwd;
-  g_config.monitor_baud = baud;
+  g_config.device_name = deviceName;
   g_config.verify = verify;
   server.send(200, "application/json", "{\"success\":true}");
 }
@@ -1701,6 +1725,65 @@ void handleDeleteFile() {
   }
 }
 
+// GET /api/files/{name}  下载已上传的固件文件
+//   返回文件内容（application/octet-stream），Content-Disposition: attachment
+//   复用 sendChunked_P 的可靠写入方式，避免 chunkedResponseModeStart + sendContent_P
+//   配合在跨 tailscale 时丢包
+void handleGetFile() {
+  String name = server.pathArg(0);
+  if (name.length() == 0) {
+    server.send(400, "application/json", "{\"error\":\"no filename\"}");
+    return;
+  }
+  name = urlDecode(name);
+  // 安全检查：禁止下载 WebUI 文件和配置，禁止路径穿越
+  if (name == "config.json" || name == "index.html" ||
+      name == "style.css" || name == "app.js" || name.indexOf('/') >= 0 ||
+      name.indexOf('\\') >= 0) {
+    server.send(403, "application/json", "{\"error\":\"forbidden\"}");
+    return;
+  }
+  String path = "/" + name;
+  if (!LittleFS.exists(path)) {
+    server.send(404, "application/json", "{\"error\":\"not found\"}");
+    return;
+  }
+  fs::File f = LittleFS.open(path, "r");
+  if (!f) {
+    server.send(500, "application/json", "{\"error\":\"open failed\"}");
+    return;
+  }
+  size_t fileSize = f.size();
+  WiFiClient client = server.client();
+  client.setNoDelay(true);
+  client.setTimeout(5000);
+  server.setContentLength(fileSize);
+  server.sendHeader("Content-Disposition", "attachment; filename=\"" + name + "\"");
+  server.sendHeader("Connection", "close");
+  server.send(200, "application/octet-stream", "");  // 只发响应头
+
+  // 分块可靠写入（与 sendChunked_P 同款逻辑）
+  const size_t CHUNK = 1000;
+  uint8_t buf[CHUNK];
+  while (fileSize > 0) {
+    size_t n = (fileSize < CHUNK) ? fileSize : CHUNK;
+    int read = f.read(buf, n);
+    if (read <= 0) break;
+    size_t written = 0;
+    while (written < (size_t)read) {
+      int w = client.write(buf + written, read - written);
+      if (w > 0) {
+        written += w;
+      } else {
+        delay(1);
+      }
+      yield();
+    }
+    fileSize -= read;
+  }
+  f.close();
+}
+
 void handleReboot() {
   server.send(200, "application/json", "{\"success\":true}");
   delay(200);
@@ -1787,12 +1870,13 @@ void handleSnifferStart() {
   enterSnifferMode((uint8_t)channel, (uint32_t)baud);
 }
 
-// POST /api/sniffer/channel  切换抓包通道（必须 SNIFFING）
+// POST /api/sniffer/channel  切换抓包通道（必须 SNIFFING，且无 stream 客户端连接）
 //   body: {"channel":15}
-//   返回: 501 + 提示信息（当前 sniffer 固件不支持运行时切换通道）
-// 注意：sniffer 固件的 serial_rx_inter_handler 会 zb_clear_sniffer+zb_start_sniffer，
-// 可能影响抓包；且 Serial.write+flush 可能导致 RX 失效（见 enterSnifferMode 注释）。
-// 如需切换通道，请重新烧录对应通道的 sniffer 固件。
+//   返回: {"success":true,"channel":15}
+// 原理：ZBOSS sniffer 协议下行仅 1 字节通道号（11-26），sniffer 固件 serial_rx_inter_handler
+//   收到后执行 zb_clear_sniffer + zb_start_sniffer 切换通道。
+// 注意：stream 客户端连接期间 HTTP 单线程阻塞，本接口无法响应。PC 脚本应先断开 stream
+//   再调本接口切换通道，然后重新连接 stream。
 void handleSnifferChannel() {
   if (g_state != STATE_SNIFFING) {
     server.send(409, "application/json", "{\"error\":\"not sniffing\"}");
@@ -1804,12 +1888,20 @@ void handleSnifferChannel() {
     server.send(400, "application/json", "{\"error\":\"invalid channel\"}");
     return;
   }
-  // 当前 sniffer 固件不支持运行时切换通道，返回 501 提示
-  String json = "{\"error\":\"channel_switch_unsupported\","
-                "\"message\":\"当前 sniffer 固件不支持运行时切换通道，"
-                "请重新烧录对应通道的 sniffer 固件\"}";
-  server.send(501, "application/json", json);
-  Serial.printf("Sniffer channel switch rejected (unsupported): %d\n", (int)channel);
+  // 发送 1 字节通道号给 sniffer 固件（ZBOSS 协议下行）
+  Serial.write((uint8_t)channel);
+  Serial.flush();
+  // 等待 sniffer 切换通道并清空 RF FIFO（zb_clear_sniffer + zb_start_sniffer）
+  delay(200);
+  // 清空 RX 缓冲（切换期间可能输出了状态字节，避免污染新通道的 pcap）
+  while (Serial.available()) Serial.read();
+  // 清空环形缓冲（避免残留的旧通道数据污染新通道的 pcap）
+  g_sniffer_head = 0;
+  g_sniffer_tail = 0;
+  g_sniffer_drop_accum = 0;
+  g_sniffer_channel = (uint8_t)channel;
+  String json = "{\"success\":true,\"channel\":" + String((int)channel) + "}";
+  server.send(200, "application/json", json);
 }
 
 // GET /api/sniffer/status  sniffer 状态 + 丢包统计
@@ -1897,7 +1989,9 @@ void handleSnifferStream() {
     client.println("0\r\n\r\n");
   }
   g_sniffer_client_active = false;
-  Serial.println("Sniffer stream client disconnected");
+  // 注意：此处不用 Serial.println 调试输出（sniffer 模式下 Serial.write 可能影响 RX，
+  // 见 enterSnifferMode 注释）。stream 客户端断开后 sniffer 继续运行，loop() 中
+  // handleSniffing() 持续读取 RX 数据入缓冲，等待下一个 stream 客户端连接。
 }
 
 void initHttpRoutes() {
@@ -1923,6 +2017,7 @@ void initHttpRoutes() {
   server.on("/api/sniffer/status", HTTP_GET, handleSnifferStatus);
   server.on("/api/files", HTTP_GET, handleFiles);
   // /api/files/{name} - 用正则通配符
+  server.on(UriRegex("^/api/files/([^/]+)$"), HTTP_GET, handleGetFile);
   server.on(UriRegex("^/api/files/([^/]+)$"), HTTP_DELETE, handleDeleteFile);
   server.on("/api/wifi/scan", HTTP_GET, handleWifiScan);
   server.on("/api/wifi/connect", HTTP_POST, handleWifiConnect);

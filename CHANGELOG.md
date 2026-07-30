@@ -14,6 +14,52 @@
 
 ---
 
+## [1.5] - 2026-07-30
+
+### 新增
+- **设备名称（主机名）**：设置页新增"设备名称"卡片，可自定义浏览器标签页标题
+  （如"烧录器A"），用于区分多个烧录器。配置存储在 `/config.json` 的 `device_name`
+  字段，`/api/status` 同步返回
+- **Flash 资源占用显示**：设置页设备信息卡片新增"Flash 占用"行，显示固件大小 /
+  总可用空间（KB + 百分比）。`/api/status` 新增 `flash` 对象
+  （`sketch_size`/`sketch_free`/`chip_size`）
+- **版本号动态同步**：`/api/status` 新增 `version` 字段，前端从后端获取版本号显示，
+  不再硬编码在 HTML 中
+- **帮助页一键复制**：帮助页新增"一键复制原文"按钮，复制 markdown 原文到剪贴板，
+  方便分享给 AI 或粘贴到其他工具
+- **WebUI 抓包页签**：新增第 5 个标签页"抓包"，浏览器可视化 Zigbee 抓包。
+  支持通道选择（11-26）、实时包列表（序号/时间/通道/长度/类型/CRC/hex 预览）、
+  详细解析开关（IEEE 802.15.4 帧头：帧类型/PAN/目的地址/源地址）、pcap 下载
+  （DLT=230，浏览器端生成）。与 API stream 互斥（单客户端）
+- **sniffer 运行时切换通道**：`POST /api/sniffer/channel` 发送 1 字节通道号
+  给 ZBOSS sniffer 固件，切换后清空缓冲。原返回 501，现已实现
+
+### 变更
+- **引入 marked.js CDN 渲染帮助页**：替换原 80 行纯正则 `renderMarkdown` 函数，
+  改用 marked.js（CDN 加载）渲染 markdown。渲染更准确（支持表格对齐、嵌套列表等），
+  CDN 加载失败时降级显示原文。不耗 nodemcu 资源（浏览器执行）
+- **移除设置页"默认监控"卡片**：每个实际页面（监控页）都有波特率选择，
+  全局默认配置冗余。`Config.monitor_baud` 字段从 config.json 移除
+  （`g_monitor_baud` 保留作为运行时状态，监控启动时设置）
+- **版本号格式简化**：固件版本显示从 "CCLoader-WebUI v1.3" 简化为 "v1.5"
+- **help.md 章节排序调整**：将"Zigbee 抓包功能（SNIFFING 模式）"从第 8 节
+  移至第 7 节（常见问题前），原"常见问题"改为第 8 节
+- **enterSnifferMode 支持任意通道启动**：sniffer 固件默认启动通道 11，若请求
+  通道 ≠ 11，启动后发送 1 字节通道号切换（ZBOSS 协议下行）。发送后延迟 200ms
+  + 清空 RX 缓冲，规避切换期间噪声
+- **移除 handleSnifferStream 末尾 Serial.println**：sniffer 模式下 Serial.write
+  可能影响 RX（历史观察），移除调试输出避免潜在风险
+
+### 修复
+- **sniffer 频道切换错误**：原 `/api/sniffer/channel` 直接返回 501，用户反馈
+  ZBOSS sniffer 固件支持串口接收 1 字节通道号切换频道。现已实现，发送通道号
+  + 延迟 200ms + 清空缓冲
+
+### 版本号
+- 固件版本号 v1.3 → **v1.5**
+
+---
+
 ## [1.3] - 2026-07-26
 
 ### 新增
@@ -121,7 +167,8 @@
 
 ---
 
-[Unreleased]: https://github.com/wedone/CCLoader/compare/v1.3...HEAD
+[Unreleased]: https://github.com/wedone/CCLoader/compare/v1.5...HEAD
+[1.5]: https://github.com/wedone/CCLoader/compare/v1.3...v1.5
 [1.3]: https://github.com/wedone/CCLoader/compare/v1.2...v1.3
 [1.2]: https://github.com/wedone/CCLoader/compare/v1.1...v1.2
 [1.1]: https://github.com/wedone/CCLoader/compare/v1.0...v1.1

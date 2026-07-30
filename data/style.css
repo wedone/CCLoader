@@ -56,6 +56,7 @@ header {
 .badge.idle    { background: var(--success); color: #fff; }
 .badge.burning { background: var(--warning); color: #fff; }
 .badge.monitor { background: var(--monitor); color: #fff; }
+.badge.sniffing { background: #9c27b0; color: #fff; }
 
 .tabs {
   display: flex;
@@ -145,6 +146,7 @@ select:focus {
 .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
 .btn.primary:hover:not(:disabled) { background: var(--primary-hover); }
 .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn.download-btn { background: var(--success); border-color: var(--success); color: #fff; }
 
 .progress-container {
   margin: 12px 0;
@@ -205,6 +207,7 @@ select:focus {
 .file-item .file-info { display: flex; gap: 12px; align-items: center; }
 .file-item .file-name { cursor: pointer; color: var(--primary); }
 .file-item .file-meta { color: var(--text-muted); font-size: 12px; }
+.file-item .file-btn-group { display: flex; gap: 8px; flex-shrink: 0; }
 
 /* WiFi 配网 */
 .hint { color: var(--text-muted); font-size: 12px; margin-top: 6px; }
@@ -442,3 +445,70 @@ select:focus {
 .ota-preview.error { color: var(--danger); }
 .ota-preview .addr-ok { color: var(--success); }
 .ota-preview .addr-warn { color: var(--warning); }
+
+/* 抓包页样式 */
+.sniffer-stats {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+  align-items: center;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.pkt-list-wrap {
+  max-height: 480px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-top: 12px;
+  background: #000;
+}
+
+.pkt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: Consolas, Monaco, "Courier New", monospace;
+  font-size: 11px;
+}
+
+.pkt-table thead {
+  position: sticky;
+  top: 0;
+  background: var(--bg-input);
+  z-index: 1;
+}
+
+.pkt-table th {
+  padding: 6px 8px;
+  text-align: left;
+  color: var(--text);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.pkt-table td {
+  padding: 4px 8px;
+  color: #d4d4d4;
+  border-bottom: 1px solid #1a1d23;
+  vertical-align: top;
+}
+
+.pkt-table tr:hover td { background: #0d1117; }
+
+.pkt-table td.col-idx { color: var(--text-muted); width: 40px; }
+.pkt-table td.col-time { color: var(--text-muted); width: 90px; white-space: nowrap; }
+.pkt-table td.col-ch { width: 30px; text-align: center; }
+.pkt-table td.col-len { width: 50px; text-align: right; }
+.pkt-table td.col-type { width: 70px; }
+.pkt-table td.col-crc { width: 50px; text-align: center; }
+.pkt-table td.col-hex { max-width: 280px; word-break: break-all; color: #7ec699; }
+.pkt-table td.col-detail { color: #569cd6; font-size: 10px; }
+
+.pkt-type-ok { color: var(--success); }
+.pkt-type-err { color: var(--danger); }
+.pkt-type-drop { color: var(--warning); font-weight: 600; }
+.pkt-crc-ok { color: var(--success); }
+.pkt-crc-bad { color: var(--danger); }

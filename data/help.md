@@ -1,7 +1,7 @@
 # CCLoader WebUI 帮助
 
 > NodeMCU ESP8266 + CC2530 烧录/监控一体机。本文档由 `/api/help` 返回，WebUI 帮助页与 AI Agent 共用同一份内容。
-> 固件版本: CCLoader-WebUI v1.1
+> 固件版本: v1.5
 
 ---
 
@@ -267,7 +267,86 @@ curl -F "image=@.pio/build/nodemcuv2/firmware.bin" http://10.0.0.147/update
 
 ---
 
-## 7. 常见问题
+## 7. Zigbee 抓包功能（SNIFFING 模式）
+
+CCLoader 可作为 Zigbee 抓包转发器：CC2530 烧录 ZBOSS sniffer 固件后，通过 WiFi 实时转发 IEEE 802.15.4 帧到 PC，生成 pcap 文件供 Wireshark 分析。
+
+### 7.1 工作原理
+
+```
+CC2530 (sniffer固件) ──P0_3 UART0 TX──→ ESP8266 GPIO3 (RX)
+                                          │ 32KB 环形缓冲
+                                          ▼ HTTP chunked
+                                    /api/sniffer/stream
+                                          │
+                                          ▼ WiFi
+                                    PC Python 脚本 → .pcap → Wireshark
+```
+
+硬件零改动：GPIO3 (RX) ← P0_3 (UART0 TX) 这根线已接好（与监控共用）。CC2530 需先烧录 ZBOSS sniffer 固件（非 HGZBSwitch）。
+
+**两种使用方式**：
+- **WebUI 抓包页**（浏览器可视化）：WebUI "抓包"标签页，支持通道选择、实时包列表（hex + 帧类型 + CRC 状态）、详细解析（IEEE 802.15.4 帧头：帧类型/PAN/地址）、pcap 下载。适合快速查看和调试。
+- **API 流式接收**（PC 脚本自动化）：`/api/sniffer/stream` 二进制透传，PC 端 Python 脚本解析 ZBOSS 协议生成 pcap。适合长时间抓包和 Wireshark 分析。
+
+> WebUI 和 API 互斥（stream 单客户端），不能同时使用。
+
+### 7.2 抓包流程（Agent 自动化）
+
+```bash
+IP=10.0.0.147
+# 1. 启动 sniffer（通道 11，波特率 115200）
+curl -s -X POST http://$IP/api/sniffer/start \
+  -H "Content-Type: application/json" -d '{"channel":11}'
+# 返回: {"success":true,"channel":11,"baud":115200,"buffer_size":16384}
+
+# 2. 检查状态
+curl -s http://$IP/api/sniffer/status
+# 返回: {"active":true,"channel":11,"buffer_used":0,"bytes_received":0,...}
+
+# 3. 流式接收（阻塞，Ctrl+C 停止）
+curl http://$IP/api/sniffer/stream -o capture.raw
+
+# 4. 停止 sniffer（stream 断开后才能处理）
+curl -s -X POST http://$IP/api/stop
+```
+
+### 7.3 PC 端 pcap 生成
+
+ESP8266 只透传 ZBOSS 原始字节，PC 端 Python 脚本解析 ZBOSS 包头、提取 IEEE 802.15.4 帧、生成 pcap（DLT=230）。参考脚本及完整协议见 `CCLoader_Sniffer抓包改造需求.md`。
+
+### 7.4 通道切换
+
+**启动时指定通道**：`POST /api/sniffer/start` 支持 `channel` 参数（11-26），默认 11。若请求通道 ≠ 11，ESP8266 会在 sniffer 启动后通过串口发送 1 字节通道号切换（ZBOSS 协议下行）。
+
+**运行时切换通道**：`POST /api/sniffer/channel` body `{"channel":15}` 发送 1 字节通道号给 sniffer 固件，切换后清空缓冲。
+
+```bash
+# 切换到通道 15
+curl -s -X POST http://$IP/api/sniffer/channel \
+  -H "Content-Type: application/json" -d '{"channel":15}'
+# 返回: {"success":true,"channel":15}
+```
+
+> **注意**：stream 客户端连接期间 HTTP 单线程阻塞，本接口无法响应。PC 脚本应先断开 stream 再调本接口切换通道，然后重新连接 stream。
+
+Zigbee 常用通道：11、15、20、25。
+
+### 7.5 丢包标记
+
+缓冲满时丢弃最旧数据，每累计 1024 字节丢弃插入一个标记包（ZBOSS 头格式，`type=0xFF`，含累计丢弃字节数）。PC 端脚本识别 `type=0xFF` 后可标记 pcap 缺口。
+
+### 7.6 注意事项
+
+- **状态互斥**：SNIFFING 与 BURNING、MONITORING 互斥，必须 IDLE 才能启动
+- **stream 阻塞**：流式传输期间 HTTP 端口被占用，`/api/stop` 等请求需等 stream 客户端断开后才能响应。PC 脚本先断开 stream 再调 `/api/stop`
+- **单客户端**：同时只允许 1 个 stream 客户端，第二个返回 409 `stream busy`
+- **CC2530 固件**：必须烧录 ZBOSS sniffer 固件（非 HGZBSwitch），波特率 115200
+- **缓冲大小**：16KB（ESP8266 RAM 限制，32KB 会导致内存不足无法启动）
+
+---
+
+## 8. 常见问题
 
 **Q: 烧录 ESP8266 时报 "Timed out waiting for packet header"？**
 A: CC2530 的 TX 线干扰了 ESP8266 GPIO3 (RX)。烧录前先拔掉 CC2530 P0_3 → ESP8266 RX 这根线，烧完再插回。
@@ -292,66 +371,4 @@ A: 烧录成功后延时 3 秒自动调用 /api/reboot 重启 ESP8266，可释�
 
 **Q: 如何清除 CC2530 的 Zigbee 配网信息（不擦除固件）？**
 A: 在 WebUI 烧录区点击"清除配网"按钮，或直接调用 `POST /api/nvreset`。流程：读取 CC2530 全部 Flash 到临时文件 → 清除尾部 NV 区域（最后 4KB）→ 全片擦除 → 写回。固件保留，仅清除配网信息，设备需要重新加入 Zigbee 网络。整个过程约 2 分钟，进度通过进度条显示。
-
----
-
-## 8. Zigbee 抓包功能（SNIFFING 模式）
-
-CCLoader 可作为 Zigbee 抓包转发器：CC2530 烧录 ZBOSS sniffer 固件后，通过 WiFi 实时转发 IEEE 802.15.4 帧到 PC，生成 pcap 文件供 Wireshark 分析。
-
-### 8.1 工作原理
-
-```
-CC2530 (sniffer固件) ──P0_3 UART0 TX──→ ESP8266 GPIO3 (RX)
-                                          │ 32KB 环形缓冲
-                                          ▼ HTTP chunked
-                                    /api/sniffer/stream
-                                          │
-                                          ▼ WiFi
-                                    PC Python 脚本 → .pcap → Wireshark
-```
-
-硬件零改动：GPIO3 (RX) ← P0_3 (UART0 TX) 这根线已接好（与监控共用）。CC2530 需先烧录 ZBOSS sniffer 固件（非 HGZBSwitch）。
-
-### 8.2 抓包流程（Agent 自动化）
-
-```bash
-IP=10.0.0.147
-# 1. 启动 sniffer（通道 11，波特率 115200）
-curl -s -X POST http://$IP/api/sniffer/start \
-  -H "Content-Type: application/json" -d '{"channel":11}'
-# 返回: {"success":true,"channel":11,"baud":115200,"buffer_size":16384}
-
-# 2. 检查状态
-curl -s http://$IP/api/sniffer/status
-# 返回: {"active":true,"channel":11,"buffer_used":0,"bytes_received":0,...}
-
-# 3. 流式接收（阻塞，Ctrl+C 停止）
-curl http://$IP/api/sniffer/stream -o capture.raw
-
-# 4. 停止 sniffer（stream 断开后才能处理）
-curl -s -X POST http://$IP/api/stop
-```
-
-### 8.3 PC 端 pcap 生成
-
-ESP8266 只透传 ZBOSS 原始字节，PC 端 Python 脚本解析 ZBOSS 包头、提取 IEEE 802.15.4 帧、生成 pcap（DLT=230）。参考脚本及完整协议见 `CCLoader_Sniffer抓包改造需求.md`。
-
-### 8.4 通道切换
-
-**当前 sniffer 固件不支持运行时切换通道**。`/api/sniffer/channel` 接口返回 501 + `channel_switch_unsupported` 错误。如需切换通道，请重新烧录对应通道的 sniffer 固件。
-
-Zigbee 常用通道：11、15、20、25。
-
-### 8.5 丢包标记
-
-缓冲满时丢弃最旧数据，每累计 1024 字节丢弃插入一个标记包（ZBOSS 头格式，`type=0xFF`，含累计丢弃字节数）。PC 端脚本识别 `type=0xFF` 后可标记 pcap 缺口。
-
-### 8.6 注意事项
-
-- **状态互斥**：SNIFFING 与 BURNING、MONITORING 互斥，必须 IDLE 才能启动
-- **stream 阻塞**：流式传输期间 HTTP 端口被占用，`/api/stop` 等请求需等 stream 客户端断开后才能响应。PC 脚本先断开 stream 再调 `/api/stop`
-- **单客户端**：同时只允许 1 个 stream 客户端，第二个返回 409 `stream busy`
-- **CC2530 固件**：必须烧录 ZBOSS sniffer 固件（非 HGZBSwitch），波特率 115200
-- **缓冲大小**：16KB（ESP8266 RAM 限制，32KB 会导致内存不足无法启动）
 

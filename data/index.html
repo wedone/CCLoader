@@ -19,6 +19,7 @@
   <nav class="tabs">
     <button class="tab-btn active" data-tab="burn">烧录</button>
     <button class="tab-btn" data-tab="monitor">监控</button>
+    <button class="tab-btn" data-tab="sniffer">抓包</button>
     <button class="tab-btn" data-tab="settings">设置</button>
     <button class="tab-btn" data-tab="help">帮助</button>
   </nav>
@@ -125,6 +126,71 @@
       </div>
     </section>
 
+    <!-- 抓包页 -->
+    <section id="tab-sniffer" class="tab-content">
+      <h2>Zigbee 抓包</h2>
+
+      <div class="card">
+        <h3>控制</h3>
+        <label>通道:
+          <select id="sniffer-channel-select">
+            <option value="11" selected>11</option>
+            <option value="12">12</option>
+            <option value="13">13</option>
+            <option value="14">14</option>
+            <option value="15">15</option>
+            <option value="16">16</option>
+            <option value="17">17</option>
+            <option value="18">18</option>
+            <option value="19">19</option>
+            <option value="20">20</option>
+            <option value="21">21</option>
+            <option value="22">22</option>
+            <option value="23">23</option>
+            <option value="24">24</option>
+            <option value="25">25</option>
+            <option value="26">26</option>
+          </select>
+        </label>
+        <button id="sniffer-start-btn" class="btn primary">开始抓包</button>
+        <button id="sniffer-stop-btn" class="btn" disabled>停止</button>
+        <button id="sniffer-channel-switch-btn" class="btn" disabled>切换通道</button>
+        <label><input type="checkbox" id="sniffer-detail-check"> 详细解析</label>
+        <div class="hint">CC2530 需烧录 ZBOSS sniffer 固件（波特率 115200）。详细解析在浏览器端解码 IEEE 802.15.4 帧头。</div>
+      </div>
+
+      <div class="card">
+        <div class="toolbar">
+          <button id="sniffer-clear-btn" class="btn" disabled>清空</button>
+          <button id="sniffer-download-btn" class="btn" disabled>下载 pcap</button>
+          <span class="sniffer-stats">
+            <span>包数: <span id="sniffer-pkt-count">0</span></span>
+            <span>接收: <span id="sniffer-rx">0</span> B</span>
+            <span>丢弃: <span id="sniffer-drop">0</span> B</span>
+            <span id="sniffer-state">未开始</span>
+          </span>
+        </div>
+
+        <div class="pkt-list-wrap">
+          <table class="pkt-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>时间</th>
+                <th>CH</th>
+                <th>长度</th>
+                <th>类型</th>
+                <th>CRC</th>
+                <th>hex 预览</th>
+                <th>解析</th>
+              </tr>
+            </thead>
+            <tbody id="sniffer-pkt-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
     <!-- 设置页 -->
     <section id="tab-settings" class="tab-content">
       <h2>设置</h2>
@@ -144,26 +210,19 @@
       </div>
 
       <div class="card">
-        <h3>默认监控</h3>
-        <label>波特率:
-          <select id="default-baud-select">
-            <option value="9600">9600</option>
-            <option value="19200">19200</option>
-            <option value="38400">38400</option>
-            <option value="57600">57600</option>
-            <option value="115200" selected>115200</option>
-            <option value="230400">230400</option>
-          </select>
-        </label>
-        <button id="save-monitor-btn" class="btn primary">保存</button>
+        <h3>设备名称</h3>
+        <label>主机名: <input type="text" id="device-name-input" placeholder="如：烧录器A（显示在浏览器标签页）" maxlength="32"></label>
+        <button id="save-device-name-btn" class="btn primary">保存</button>
+        <div class="hint">修改后浏览器标签页标题立即更新，用于区分多个烧录器</div>
       </div>
 
       <div class="card">
         <h3>设备信息</h3>
-        <div>固件版本: CCLoader-WebUI v1.3</div>
+        <div>固件版本: <span id="firmware-version">v1.5</span></div>
         <div>运行时长: <span id="uptime">-</span></div>
         <div>WiFi 信号: <span id="rssi">-</span> dBm</div>
         <div>IP 地址: <span id="device-ip">-</span></div>
+        <div>Flash 占用: <span id="flash-usage">-</span></div>
         <button id="reboot-btn" class="btn danger">重启 ESP8266</button>
       </div>
     </section>
@@ -173,6 +232,7 @@
       <h2>帮助</h2>
       <div class="card">
         <div class="hint">本页内容由 <code>/api/help</code> 返回，AI Agent 调用同一接口获取。修改 <code>data/help.md</code> 后重新生成 <code>web_assets.h</code> 即可同步更新。</div>
+        <button id="help-copy-btn" class="btn">一键复制原文</button>
       </div>
       <div class="card">
         <div id="help-content" class="help-md">加载中...</div>
@@ -180,6 +240,7 @@
     </section>
   </main>
 
+  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

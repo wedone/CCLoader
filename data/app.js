@@ -58,6 +58,9 @@ function setStateBadge(state) {
   } else if (state === 'monitoring') {
     badge.classList.add('monitor');
     badge.textContent = '监控中';
+  } else if (state === 'sniffing') {
+    badge.classList.add('sniffing');
+    badge.textContent = '抓包中';
   }
 }
 
@@ -98,6 +101,12 @@ function connectSSE() {
         break;
       case 'monitor_reset':
         onMonitorReset();
+        break;
+      case 'sniffer_start':
+        onSnifferStart(msg.channel);
+        break;
+      case 'sniffer_stop':
+        onSnifferStop();
         break;
       case 'wifi_connected':
         if (msg.ip) {
@@ -549,11 +558,21 @@ async function refreshFileList() {
 
       const delBtn = document.createElement('button');
       delBtn.className = 'btn danger delete-btn';
-      delBtn.dataset.name = f.name;  // dataset 自动转义
+      delBtn.dataset.name = f.name;
       delBtn.textContent = '删除';
 
+      const dlBtn = document.createElement('button');
+      dlBtn.className = 'btn download-btn';
+      dlBtn.dataset.name = f.name;
+      dlBtn.textContent = '下载';
+
+      const btnGroup = document.createElement('div');
+      btnGroup.className = 'file-btn-group';
+      btnGroup.appendChild(dlBtn);
+      btnGroup.appendChild(delBtn);
+
       item.appendChild(info);
-      item.appendChild(delBtn);
+      item.appendChild(btnGroup);
       list.appendChild(item);
     });
     // 选中事件
@@ -580,6 +599,16 @@ async function refreshFileList() {
         } else {
           alert('删除失败: ' + r.error);
         }
+      });
+    });
+    // 下载事件
+    list.querySelectorAll('.download-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const url = '/api/files/' + encodeURIComponent(btn.dataset.name);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = btn.dataset.name;
+        a.click();
       });
     });
   } catch (e) {
@@ -839,10 +868,19 @@ async function loadConfig() {
     const cfg = await resp.json();
     $('wifi-ssid').value = cfg.wifi_ssid || '';
     $('wifi-password').value = cfg.wifi_password || '';
-    $('default-baud-select').value = cfg.monitor_baud || 115200;
-    $('baud-select').value = cfg.monitor_baud || 115200;
+    $('device-name-input').value = cfg.device_name || '';
+    // 同步浏览器标签页标题
+    updateDocumentTitle(cfg.device_name);
   } catch (e) {
     console.error('loadConfig error:', e);
+  }
+}
+
+function updateDocumentTitle(name) {
+  if (name && name.trim()) {
+    document.title = name.trim();
+  } else {
+    document.title = 'CCLoader WebUI';
   }
 }
 
@@ -964,16 +1002,16 @@ $('wifi-connect-btn').addEventListener('click', async () => {
   }
 });
 
-$('save-monitor-btn').addEventListener('click', async () => {
-  const cfg = { monitor_baud: parseInt($('default-baud-select').value) };
+$('save-device-name-btn').addEventListener('click', async () => {
+  const name = $('device-name-input').value.trim();
   const resp = await fetch('/api/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(cfg)
+    body: JSON.stringify({ device_name: name })
   });
   const r = await resp.json();
   if (r.success) {
-    $('baud-select').value = cfg.monitor_baud;
+    updateDocumentTitle(name);
     alert('已保存');
   } else {
     alert('保存失败: ' + r.error);
@@ -1017,6 +1055,21 @@ async function pollStatus() {
       const m = Math.floor((s.uptime % 3600) / 60);
       $('uptime').textContent = h + '时' + m + '分';
     }
+    // Flash 资源占用
+    if (s.flash) {
+      const used = (s.flash.sketch_size / 1024).toFixed(0);
+      const total = ((s.flash.sketch_size + s.flash.sketch_free) / 1024).toFixed(0);
+      const pct = (s.flash.sketch_size / (s.flash.sketch_size + s.flash.sketch_free) * 100).toFixed(1);
+      $('flash-usage').textContent = used + 'KB / ' + total + 'KB (' + pct + '%)';
+    }
+    // 版本号（从后端同步）
+    if (s.version) {
+      $('firmware-version').textContent = s.version;
+    }
+    // 设备名称（同步标签页标题，避免用户在其他设备修改后未刷新）
+    if (s.device_name !== undefined) {
+      updateDocumentTitle(s.device_name);
+    }
     if (s.monitor) {
       if (s.monitor.active && !monitorActive) {
         onMonitorStart(s.monitor.baud);
@@ -1024,106 +1077,422 @@ async function pollStatus() {
         onMonitorStop();
       }
     }
+    if (s.sniffer) {
+      if (s.sniffer.active && !snifferActive) {
+        onSnifferStart(s.sniffer.channel);
+      } else if (!s.sniffer.active && snifferActive) {
+        onSnifferStop();
+      }
+      // 同步丢包统计（stream 期间无法调用 status，这里补偿更新）
+      if (s.sniffer.active) {
+        $('sniffer-drop').textContent = s.sniffer.dropped_bytes || 0;
+      }
+    }
   } catch (e) {}
 }
 
-// ===== 轻量级 markdown → HTML 渲染（纯正则，无依赖） =====
-function renderMarkdown(text) {
-  // 先 HTML 转义
-  let html = text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-
-  // 代码块 ```...``` （必须最先处理，避免内部标记被篡改）
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-    const cls = lang ? ` class="lang-${lang}"` : '';
-    return `<pre><code${cls}>${code.trim()}</code></pre>`;
-  });
-
-  // 行内代码 `code`
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-
-  // 水平分割线
-  html = html.replace(/^---+\s*$/gm, '<hr>');
-
-  // 标题 h1-h6
-  html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
-  html = html.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
-  html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
-  html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
-  html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
-  html = html.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
-
-  // 粗体 **text** 和 *斜体*
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-
-  // 链接 [text](url)
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-
-  // 无序列表 - 开头
-  html = html.replace(/^[\s]*[-*+]\s+(.+)$/gm, '<li>$1</li>');
-
-  // 有序列表 1. 开头
-  html = html.replace(/^[\s]*\d+\.\s+(.+)$/gm, '<li>$1</li>');
-
-  // 包裹 <li> 为 <ul>/<ol>
-  html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, (match) => {
-    const lines = match.trim().split('\n');
-    // 简单判断：如果所有行都以 <li> 开头，包裹为 <ul>
-    if (lines.every(l => l.trim().startsWith('<li>'))) {
-      return '<ul>\n' + lines.join('\n') + '\n</ul>\n';
-    }
-    return match;
-  });
-
-  // 表格：| header | header | → <table>
-  html = html.replace(/^(\|.+)\n\|[\s-:|]+\|/gm, (match, headerLine) => {
-    // 取表头单元格
-    const headers = headerLine.split('|').filter(c => c.trim()).map(c => c.trim());
-    let table = '<table>\n<thead>\n<tr>\n';
-    headers.forEach(h => { table += `<th>${h}</th>\n`; });
-    table += '</tr>\n</thead>\n<tbody>\n';
-    // 将后续行追加到 tbody（由后续替换处理行内）
-    return table;
-  });
-
-  // 表格行 | cell | cell |
-  html = html.replace(/^\|(.+)\|$/gm, (match, cells) => {
-    const cols = cells.split('|').filter(c => c.trim()).map(c => c.trim());
-    // 跳过表头分隔行（已在上一步处理）
-    if (cols.every(c => /^[\s:-]+$/.test(c))) return match;
-    let row = '<tr>\n';
-    cols.forEach(c => { row += `<td>${c}</td>\n`; });
-    row += '</tr>\n';
-    return row;
-  });
-
-  // 合并表格行到 tbody，关闭 table
-  html = html.replace(/(<table>[\s\S]*?)((?:<tr>[\s\S]*?<\/tr>\n?)+)/g, (match, before, rows) => {
-    return before + rows + '</tbody>\n</table>\n';
-  });
-
-  // 段落：连续非空文本行（不含块级标签）包裹 <p>
-  html = html.replace(/^(?!<[h1-6hruolp\/]|$)(.+)$/gm, '<p>$1</p>');
-
-  // 清理多余空行
-  html = html.replace(/\n{3,}/g, '\n\n');
-
-  return html;
-}
-
-// ===== 帮助页：从 /api/help 加载 markdown 并渲染 =====
+// ===== 帮助页：从 /api/help 加载 markdown，用 marked.js（CDN）渲染 =====
+let helpRawText = '';  // 保留原文用于一键复制
 async function loadHelp() {
   try {
     const resp = await fetch('/api/help');
     const text = await resp.text();
-    $('help-content').innerHTML = renderMarkdown(text);
+    helpRawText = text;
+    // marked.js 从 CDN 加载（index.html 末尾引入）。若 CDN 加载失败则降级显示原文
+    if (typeof marked !== 'undefined' && marked.parse) {
+      $('help-content').innerHTML = marked.parse(text);
+    } else {
+      $('help-content').innerHTML = '<pre style="white-space:pre-wrap;">' +
+        text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre>';
+    }
   } catch (e) {
     $('help-content').textContent = '加载失败: ' + e.message;
   }
 }
+
+$('help-copy-btn').addEventListener('click', async () => {
+  if (!helpRawText) {
+    alert('帮助内容尚未加载');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(helpRawText);
+    alert('已复制帮助原文到剪贴板');
+  } catch (e) {
+    // 降级方案：选中文本
+    const range = document.createRange();
+    range.selectNode($('help-content'));
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+    alert('剪贴板不可用，已选中文本，请手动 Ctrl+C 复制');
+  }
+});
+
+// ===== Sniffer 抓包 =====
+// ZBOSS 协议：包头 4 字节（len, type, tail[2]）+ payload（len-4 字节）
+// type=0x00 OK / 0x01 TOO_BIG / 0x02 OVERFLOW / 0xFF 丢包标记
+// payload 最后 1 字节：CRC 状态（bit7=1 OK, bit7=0 BAD）
+let snifferActive = false;
+let snifferStreamController = null;  // AbortController
+let snifferPackets = [];  // 已解析的 IEEE 帧（用于 pcap 下载）
+let snifferPktCount = 0;
+let snifferRxBytes = 0;
+let snifferChannel = 11;
+let snifferDetailMode = false;
+let snifferStreamBuf = new Uint8Array(0);  // 流式接收缓冲
+
+function onSnifferStart(channel) {
+  if (snifferActive) return;  // 避免重复触发（SSE + pollStatus）
+  snifferActive = true;
+  snifferChannel = channel;
+  snifferPktCount = 0;
+  snifferRxBytes = 0;
+  snifferPackets = [];
+  snifferStreamBuf = new Uint8Array(0);
+  $('sniffer-pkt-tbody').innerHTML = '';
+  $('sniffer-pkt-count').textContent = '0';
+  $('sniffer-rx').textContent = '0';
+  $('sniffer-drop').textContent = '0';
+  $('sniffer-state').textContent = '抓包中 @ CH' + channel;
+  $('sniffer-start-btn').disabled = true;
+  $('sniffer-stop-btn').disabled = false;
+  $('sniffer-channel-switch-btn').disabled = false;
+  $('sniffer-clear-btn').disabled = false;
+  $('sniffer-download-btn').disabled = false;
+  // 开始流式接收（SSE 触发，此时 sniffer 已启动）
+  readSnifferStream();
+}
+
+function onSnifferStop() {
+  if (!snifferActive) return;
+  snifferActive = false;
+  if (snifferStreamController) {
+    snifferStreamController.abort();
+    snifferStreamController = null;
+  }
+  $('sniffer-state').textContent = '已停止';
+  $('sniffer-start-btn').disabled = false;
+  $('sniffer-stop-btn').disabled = true;
+  $('sniffer-channel-switch-btn').disabled = true;
+}
+
+async function readSnifferStream() {
+  if (snifferStreamController) return;  // 已有 stream 在读
+  snifferStreamController = new AbortController();
+  try {
+    const resp = await fetch('/api/sniffer/stream', { signal: snifferStreamController.signal });
+    if (!resp.ok) {
+      $('sniffer-state').textContent = 'stream 错误: ' + resp.status;
+      snifferStreamController = null;
+      return;
+    }
+    const reader = resp.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      // 追加到缓冲
+      const newBuf = new Uint8Array(snifferStreamBuf.length + value.length);
+      newBuf.set(snifferStreamBuf);
+      newBuf.set(value, snifferStreamBuf.length);
+      snifferStreamBuf = newBuf;
+      snifferRxBytes += value.length;
+      $('sniffer-rx').textContent = snifferRxBytes;
+      // 解析 ZBOSS 包
+      parseZbossPackets();
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      console.error('Sniffer stream error:', e);
+    }
+  }
+  snifferStreamController = null;
+}
+
+function parseZbossPackets() {
+  let pos = 0;
+  while (pos + 4 <= snifferStreamBuf.length) {
+    const len = snifferStreamBuf[pos];
+    // len < 5（4 字节包头 + 至少 1 字节 payload）非法；len > 127 超出 ZBOSS 协议
+    if (len < 5 || len > 127) {
+      pos++;
+      continue;
+    }
+    if (pos + len > snifferStreamBuf.length) break;  // 数据不完整，等下次
+    const type = snifferStreamBuf[pos + 1];
+    const payload = snifferStreamBuf.slice(pos + 4, pos + len);
+    handleZbossPacket(type, payload);
+    pos += len;
+  }
+  if (pos > 0) {
+    snifferStreamBuf = snifferStreamBuf.slice(pos);
+  }
+}
+
+function handleZbossPacket(type, payload) {
+  snifferPktCount++;
+  let typeStr, crcStr, hexPreview, detail = '';
+  let ieeeFrame = null;
+
+  if (type === 0xFF) {
+    // 丢包标记：payload 是 4 字节大端 dropped_bytes
+    const dropped = (payload.length >= 4)
+      ? ((payload[0] << 24) | (payload[1] << 16) | (payload[2] << 8) | payload[3]) >>> 0
+      : 0;
+    typeStr = '<span class="pkt-type-drop">DROP</span>';
+    crcStr = '-';
+    hexPreview = '丢包 ' + dropped + ' B';
+  } else if (type === 0x00) {
+    typeStr = '<span class="pkt-type-ok">OK</span>';
+    // payload 最后 1 字节是 CRC 状态
+    const crcByte = payload.length > 0 ? payload[payload.length - 1] : 0;
+    crcStr = (crcByte & 0x80) ? '<span class="pkt-crc-ok">OK</span>' : '<span class="pkt-crc-bad">BAD</span>';
+    // IEEE 802.15.4 帧（移除最后 1 字节 CRC 状态）
+    ieeeFrame = payload.slice(0, payload.length - 1);
+    hexPreview = bytesToHex(ieeeFrame, 32);
+    if (snifferDetailMode) {
+      detail = parseIeee802154Frame(ieeeFrame);
+    }
+    snifferPackets.push(ieeeFrame);
+  } else if (type === 0x01) {
+    typeStr = '<span class="pkt-type-err">TOO_BIG</span>';
+    crcStr = '-';
+    hexPreview = bytesToHex(payload, 32);
+  } else if (type === 0x02) {
+    typeStr = '<span class="pkt-type-err">OVF</span>';
+    crcStr = '-';
+    hexPreview = bytesToHex(payload, 32);
+  } else {
+    typeStr = '<span class="pkt-type-err">0x' + type.toString(16) + '</span>';
+    crcStr = '-';
+    hexPreview = bytesToHex(payload, 32);
+  }
+
+  appendPacketRow(snifferPktCount, snifferChannel, payload.length, typeStr, crcStr, hexPreview, detail);
+  $('sniffer-pkt-count').textContent = snifferPktCount;
+}
+
+function bytesToHex(bytes, maxLen) {
+  let hex = '';
+  const n = Math.min(bytes.length, maxLen);
+  for (let i = 0; i < n; i++) {
+    hex += bytes[i].toString(16).padStart(2, '0') + ' ';
+  }
+  if (bytes.length > maxLen) hex += '...';
+  return hex.trim();
+}
+
+// IEEE 802.15.4 帧头解析（详细解析模式）
+function parseIeee802154Frame(frame) {
+  if (frame.length < 3) return '';
+  const fc = frame[0] | (frame[1] << 8);
+  const frameType = fc & 0x07;
+  const dstAddrMode = (fc >> 10) & 0x03;
+  const srcAddrMode = (fc >> 14) & 0x03;
+  const panIdComp = (fc >> 6) & 0x01;
+  const secEnabled = (fc >> 3) & 0x01;
+  const ackReq = (fc >> 5) & 0x01;
+
+  const typeNames = ['Beacon', 'Data', 'Ack', 'MAC_Cmd'];
+  let detail = typeNames[frameType] || 'Type' + frameType;
+  if (secEnabled) detail += ' [SEC]';
+  if (ackReq) detail += ' [AR]';
+
+  // Ack 帧只有 2 字节 FC + 1 字节 Seq
+  if (frameType === 2) {
+    return detail + ' seq=' + frame[2].toString(16).padStart(2, '0');
+  }
+
+  let pos = 3;  // FC(2) + Seq(1)
+
+  // 目的地址
+  if (dstAddrMode !== 0 && pos + 2 <= frame.length) {
+    const dstPan = frame[pos] | (frame[pos + 1] << 8);
+    pos += 2;
+    detail += ' dPAN=' + dstPan.toString(16).padStart(4, '0');
+    if (dstAddrMode === 2 && pos + 2 <= frame.length) {
+      const dstAddr = frame[pos] | (frame[pos + 1] << 8);
+      pos += 2;
+      detail += ' dst=' + dstAddr.toString(16).padStart(4, '0');
+    } else if (dstAddrMode === 3 && pos + 8 <= frame.length) {
+      let dstAddr = '';
+      for (let i = 7; i >= 0; i--) dstAddr += frame[pos + i].toString(16).padStart(2, '0');
+      pos += 8;
+      detail += ' dst=' + dstAddr;
+    }
+  }
+
+  // 源地址
+  if (srcAddrMode !== 0) {
+    if (panIdComp === 0 && pos + 2 <= frame.length) {
+      const srcPan = frame[pos] | (frame[pos + 1] << 8);
+      pos += 2;
+      detail += ' sPAN=' + srcPan.toString(16).padStart(4, '0');
+    }
+    if (srcAddrMode === 2 && pos + 2 <= frame.length) {
+      const srcAddr = frame[pos] | (frame[pos + 1] << 8);
+      pos += 2;
+      detail += ' src=' + srcAddr.toString(16).padStart(4, '0');
+    } else if (srcAddrMode === 3 && pos + 8 <= frame.length) {
+      let srcAddr = '';
+      for (let i = 7; i >= 0; i--) srcAddr += frame[pos + i].toString(16).padStart(2, '0');
+      pos += 8;
+      detail += ' src=' + srcAddr;
+    }
+  }
+
+  return detail;
+}
+
+function appendPacketRow(idx, ch, len, typeStr, crcStr, hexPreview, detail) {
+  const tbody = $('sniffer-pkt-tbody');
+  const tr = document.createElement('tr');
+  const now = new Date();
+  const timeStr = pad(now.getHours(), 2) + ':' + pad(now.getMinutes(), 2) + ':' +
+                  pad(now.getSeconds(), 2) + '.' + pad(now.getMilliseconds(), 3);
+  tr.innerHTML = '<td class="col-idx">' + idx + '</td>' +
+    '<td class="col-time">' + timeStr + '</td>' +
+    '<td class="col-ch">' + ch + '</td>' +
+    '<td class="col-len">' + len + '</td>' +
+    '<td class="col-type">' + typeStr + '</td>' +
+    '<td class="col-crc">' + crcStr + '</td>' +
+    '<td class="col-hex">' + hexPreview + '</td>' +
+    '<td class="col-detail">' + detail + '</td>';
+  tbody.appendChild(tr);
+  // 限制 2000 行避免内存溢出
+  while (tbody.children.length > 2000) {
+    tbody.removeChild(tbody.firstChild);
+    // 同步移除 snifferPackets（保持索引一致）
+    if (snifferPackets.length > 0) snifferPackets.shift();
+  }
+  // 自动滚动到底部
+  const wrap = tbody.parentElement.parentElement;
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+function clearSnifferPackets() {
+  snifferPackets = [];
+  snifferPktCount = 0;
+  $('sniffer-pkt-tbody').innerHTML = '';
+  $('sniffer-pkt-count').textContent = '0';
+}
+
+function downloadPcap() {
+  // pcap 全局头（24 字节，DLT_IEEE802_15_4_NOFCS=230）
+  const header = new Uint8Array(24);
+  const dv = new DataView(header.buffer);
+  dv.setUint32(0, 0xa1b2c3d4, true);   // magic（小端）
+  dv.setUint16(4, 2, true);            // version_major
+  dv.setUint16(6, 4, true);            // version_minor
+  dv.setInt32(8, 0, true);             // thiszone
+  dv.setUint32(12, 0, true);           // sigfigs
+  dv.setUint32(16, 65535, true);       // snaplen
+  dv.setUint32(20, 230, true);         // dlt
+
+  const parts = [header];
+  const baseSec = Math.floor(Date.now() / 1000);
+  let usec = 0;
+  for (const pkt of snifferPackets) {
+    const recHeader = new Uint8Array(16);
+    const recDv = new DataView(recHeader.buffer);
+    recDv.setUint32(0, baseSec, true);           // ts_sec
+    recDv.setUint32(4, usec, true);              // ts_usec
+    recDv.setUint32(8, pkt.length, true);        // caplen
+    recDv.setUint32(12, pkt.length, true);       // origlen
+    parts.push(recHeader);
+    parts.push(pkt);
+    usec = (usec + 1000) % 1000000;  // 模拟时间递增
+  }
+
+  const blob = new Blob(parts, { type: 'application/octet-stream' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'capture_' + Date.now() + '.pcap';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+$('sniffer-start-btn').addEventListener('click', async () => {
+  const channel = parseInt($('sniffer-channel-select').value);
+  $('sniffer-start-btn').disabled = true;
+  try {
+    const resp = await fetch('/api/sniffer/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel: channel, baud: 115200 })
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      alert('启动失败: ' + (data.error || resp.status));
+      $('sniffer-start-btn').disabled = false;
+      return;
+    }
+    // 等 SSE sniffer_start 事件触发 onSnifferStart（避免重复启动 stream）
+  } catch (e) {
+    alert('启动失败: ' + e.message);
+    $('sniffer-start-btn').disabled = false;
+  }
+});
+
+$('sniffer-stop-btn').addEventListener('click', async () => {
+  // 先 abort stream，否则 /api/stop 无法响应（HTTP 单线程阻塞）
+  if (snifferStreamController) {
+    snifferStreamController.abort();
+    snifferStreamController = null;
+  }
+  try {
+    await fetch('/api/stop', { method: 'POST' });
+  } catch (e) {}
+  onSnifferStop();
+});
+
+$('sniffer-channel-switch-btn').addEventListener('click', async () => {
+  const channel = parseInt($('sniffer-channel-select').value);
+  if (channel === snifferChannel) {
+    alert('当前已是通道 ' + channel);
+    return;
+  }
+  // 先 abort stream，否则 /api/sniffer/channel 无法响应
+  if (snifferStreamController) {
+    snifferStreamController.abort();
+    snifferStreamController = null;
+  }
+  try {
+    const resp = await fetch('/api/sniffer/channel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel: channel })
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      alert('切换通道失败: ' + (data.error || data.message || resp.status));
+      return;
+    }
+    snifferChannel = channel;
+    $('sniffer-state').textContent = '抓包中 @ CH' + channel;
+    // 清空流缓冲（避免残留数据污染新通道）
+    snifferStreamBuf = new Uint8Array(0);
+    // 重新连接 stream
+    readSnifferStream();
+  } catch (e) {
+    alert('切换通道失败: ' + e.message);
+  }
+});
+
+$('sniffer-clear-btn').addEventListener('click', () => {
+  clearSnifferPackets();
+});
+
+$('sniffer-download-btn').addEventListener('click', () => {
+  if (snifferPackets.length === 0) {
+    alert('没有可下载的包');
+    return;
+  }
+  downloadPcap();
+});
+
+$('sniffer-detail-check').addEventListener('change', (e) => {
+  snifferDetailMode = e.target.checked;
+});
 
 // ===== 初始化 =====
 function init() {
