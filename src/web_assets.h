@@ -6,7 +6,7 @@
 
 namespace WebAssets {
 
-// index.html (10145 bytes, text/html)
+// index.html (10583 bytes, text/html)
 const char index_html[] PROGMEM = R"=====(
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -227,13 +227,26 @@ const char index_html[] PROGMEM = R"=====(
       </div>
 
       <div class="card">
-        <h3>设备信息</h3>
-        <div>固件版本: <span id="firmware-version">v1.5</span></div>
+        <h3>设备</h3>
+        <div>设备名称: <span id="device-name-display">-</span></div>
+        <div>IP 地址: <span id="device-ip">-</span></div>
         <div>运行时长: <span id="uptime">-</span></div>
         <div>WiFi 信号: <span id="rssi">-</span> dBm</div>
-        <div>IP 地址: <span id="device-ip">-</span></div>
-        <div>Flash 占用: <span id="flash-usage">-</span></div>
         <button id="reboot-btn" class="btn danger">重启 ESP8266</button>
+      </div>
+
+      <div class="card">
+        <h3>固件</h3>
+        <div>版本号: <span id="firmware-version">-</span></div>
+        <div>编译日期: <span id="build-time">-</span></div>
+        <div>Flash 占用: <span id="flash-usage">-</span></div>
+        <div>复位原因: <span id="reset-reason">-</span></div>
+      </div>
+
+      <div class="card">
+        <h3>内存</h3>
+        <div>空闲堆: <span id="free-heap">-</span></div>
+        <div>RAM 占用: <span id="ram-usage">-</span></div>
       </div>
     </section>
 
@@ -256,7 +269,7 @@ const char index_html[] PROGMEM = R"=====(
 </html>
 
 )=====";
-const size_t index_html_len = 10145;
+const size_t index_html_len = 10583;
 
 // style.css (12261 bytes, text/css)
 const char style_css[] PROGMEM = R"=====(
@@ -778,7 +791,7 @@ select:focus {
 )=====";
 const size_t style_css_len = 12261;
 
-// app.js (53842 bytes, application/javascript)
+// app.js (54639 bytes, application/javascript)
 const char app_js[] PROGMEM = R"=====(
 // CCLoader WebUI 前端逻辑
 // 使用 SSE (EventSource) 接收实时事件，无外部库依赖
@@ -1844,12 +1857,31 @@ async function pollStatus() {
       const pct = (s.flash.sketch_size / (s.flash.sketch_size + s.flash.sketch_free) * 100).toFixed(1);
       $('flash-usage').textContent = used + 'KB / ' + total + 'KB (' + pct + '%)';
     }
-    // 版本号（从后端同步）
+    // 版本号 + 编译日期（从后端同步）
     if (s.version) {
       $('firmware-version').textContent = s.version;
     }
-    // 设备名称（同步标签页标题，避免用户在其他设备修改后未刷新）
+    if (s.build_time) {
+      $('build-time').textContent = s.build_time;
+    }
+    // 复位原因
+    if (s.reset_reason) {
+      $('reset-reason').textContent = s.reset_reason;
+    }
+    // 内存信息
+    if (s.memory) {
+      const freeKb = (s.memory.free_heap / 1024).toFixed(1);
+      $('free-heap').textContent = freeKb + ' KB';
+      const usedKb = (s.memory.ram_used / 1024).toFixed(1);
+      const totalKb = (s.memory.ram_size / 1024).toFixed(0);
+      $('ram-usage').textContent = usedKb + ' KB / ' + totalKb + ' KB (' + s.memory.ram_pct + '%)';
+    } else if (s.free_heap !== undefined) {
+      // 兼容旧固件：free_heap 在顶层
+      $('free-heap').textContent = (s.free_heap / 1024).toFixed(1) + ' KB';
+    }
+    // 设备名称显示（设备卡片 + 同步标签页标题）
     if (s.device_name !== undefined) {
+      $('device-name-display').textContent = s.device_name || '(未设置)';
       updateDocumentTitle(s.device_name);
     }
     if (s.monitor) {
@@ -2289,7 +2321,7 @@ function init() {
 init();
 
 )=====";
-const size_t app_js_len = 53842;
+const size_t app_js_len = 54639;
 
 // config.json (90 bytes, application/json)
 const char config_json[] PROGMEM = R"=====(

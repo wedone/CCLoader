@@ -52,6 +52,14 @@
 #include "web_assets.h"  // 内嵌 WebUI 静态资源（OTA 升级时一并更新）
 
 /******************************************************************************
+ * 固件版本与编译标识（发版时修改 FIRMWARE_VERSION，BUILD_TIME 自动生成）
+ *****************************************************************************/
+#define FIRMWARE_VERSION "v1.6"
+// 编译日期时间戳：由编译器 __DATE__/__TIME__ 宏自动生成（如 "Jul 30 2026 16:36:35"）
+// 用于区分同版本号的不同编译产物，无需手动维护
+#define BUILD_TIME (__DATE__ " " __TIME__)
+
+/******************************************************************************
  * DEFINES - CC Debug 协议（原样保留）
  *****************************************************************************/
 // Start addresses on DUP (Increased buffer size improves performance)
@@ -1399,17 +1407,26 @@ void handleStatus() {
   json += ",\"time\":" + String((uint32_t)time(nullptr));
   // 设备名称（浏览器标签显示）
   json += ",\"device_name\":\"" + jsonEscape(g_config.device_name) + "\"";
-  // 固件版本号
-  json += ",\"version\":\"v1.5\"";
+  // 固件版本号 + 编译日期（编译标识，自动生成）
+  json += ",\"version\":\"" + String(FIRMWARE_VERSION) + "\"";
+  json += ",\"build_time\":\"" + String(BUILD_TIME) + "\"";
   // Flash 资源占用
   uint32_t sketchSize = ESP.getSketchSize();
   uint32_t sketchFree = ESP.getFreeSketchSpace();
   json += ",\"flash\":{\"sketch_size\":" + String(sketchSize);
   json += ",\"sketch_free\":" + String(sketchFree);
   json += ",\"chip_size\":" + String(ESP.getFlashChipSize()) + "}";
-  // 重启原因 + 空闲堆（诊断烧录崩溃用）
+  // 内存信息：free_heap + RAM 占用百分比（ESP8266 共 80KB RAM）
+  uint32_t freeHeap = ESP.getFreeHeap();
+  uint32_t ramSize = 81920;  // ESP8266 总 RAM 80KB
+  uint32_t ramUsed = ramSize - freeHeap;
+  float ramPct = (float)ramUsed / ramSize * 100;
+  json += ",\"memory\":{\"free_heap\":" + String(freeHeap);
+  json += ",\"ram_size\":" + String(ramSize);
+  json += ",\"ram_used\":" + String(ramUsed);
+  json += ",\"ram_pct\":" + String(ramPct, 1) + "}";
+  // 重启原因（诊断烧录崩溃用）
   json += ",\"reset_reason\":\"" + String(ESP.getResetReason()) + "\"";
-  json += ",\"free_heap\":" + String(ESP.getFreeHeap());
   json += "}";
   server.send(200, "application/json", json);
 }

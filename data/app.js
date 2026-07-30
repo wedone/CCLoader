@@ -1062,12 +1062,31 @@ async function pollStatus() {
       const pct = (s.flash.sketch_size / (s.flash.sketch_size + s.flash.sketch_free) * 100).toFixed(1);
       $('flash-usage').textContent = used + 'KB / ' + total + 'KB (' + pct + '%)';
     }
-    // 版本号（从后端同步）
+    // 版本号 + 编译日期（从后端同步）
     if (s.version) {
       $('firmware-version').textContent = s.version;
     }
-    // 设备名称（同步标签页标题，避免用户在其他设备修改后未刷新）
+    if (s.build_time) {
+      $('build-time').textContent = s.build_time;
+    }
+    // 复位原因
+    if (s.reset_reason) {
+      $('reset-reason').textContent = s.reset_reason;
+    }
+    // 内存信息
+    if (s.memory) {
+      const freeKb = (s.memory.free_heap / 1024).toFixed(1);
+      $('free-heap').textContent = freeKb + ' KB';
+      const usedKb = (s.memory.ram_used / 1024).toFixed(1);
+      const totalKb = (s.memory.ram_size / 1024).toFixed(0);
+      $('ram-usage').textContent = usedKb + ' KB / ' + totalKb + ' KB (' + s.memory.ram_pct + '%)';
+    } else if (s.free_heap !== undefined) {
+      // 兼容旧固件：free_heap 在顶层
+      $('free-heap').textContent = (s.free_heap / 1024).toFixed(1) + ' KB';
+    }
+    // 设备名称显示（设备卡片 + 同步标签页标题）
     if (s.device_name !== undefined) {
+      $('device-name-display').textContent = s.device_name || '(未设置)';
       updateDocumentTitle(s.device_name);
     }
     if (s.monitor) {
