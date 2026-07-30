@@ -129,8 +129,8 @@ const unsigned char dma_desc_1[8] =
 /******************************************************************************
  * CC Debug 协议函数（原样保留，完全不变）
  *****************************************************************************/
-#pragma inline
-void write_debug_byte(unsigned char data)
+inline void write_debug_byte(unsigned char data) __attribute__((always_inline));
+inline void write_debug_byte(unsigned char data)
 {
     unsigned char i;
     for (i = 0; i < 8; i++)
@@ -143,8 +143,8 @@ void write_debug_byte(unsigned char data)
     }
 }
 
-#pragma inline
-unsigned char read_debug_byte(void)
+inline unsigned char read_debug_byte(void) __attribute__((always_inline));
+inline unsigned char read_debug_byte(void)
 {
     unsigned char i;
     unsigned char data = 0x00;
@@ -158,8 +158,8 @@ unsigned char read_debug_byte(void)
     return data;
 }
 
-#pragma inline
-unsigned char wait_dup_ready(void)
+inline unsigned char wait_dup_ready(void) __attribute__((always_inline));
+inline unsigned char wait_dup_ready(void)
 {
     unsigned int count = 0;
     while ((HIGH == digitalRead(DD)) && count < 16)
@@ -433,7 +433,9 @@ uint32_t g_monitor_ring_total = 0;  // 累计写入字节数（单调递增，�
 // ESP8266 GPIO3 (RX) 接收，透传到 PC 端生成 pcap
 // 详见 CCLoader_Sniffer抓包改造需求.md
 #define SNIFFER_BUFFER_SIZE 16384  // 16KB 环形缓冲（32KB 会导致 ESP8266 RAM 不足无法启动）
-uint8_t g_sniffer_buf[SNIFFER_BUFFER_SIZE];
+// 动态分配：IDLE 状态不占用堆，给上传/烧录留出内存
+// enterSnifferMode 时 malloc，exitSnifferMode 时 free
+uint8_t* g_sniffer_buf = nullptr;
 volatile uint32_t g_sniffer_head = 0;   // 写入位置 (Serial → 缓冲)
 volatile uint32_t g_sniffer_tail = 0;   // 读取位置 (缓冲 → HTTP stream)
 volatile uint32_t g_sniffer_total_rx = 0;
@@ -1147,7 +1149,14 @@ size_t snifferRead(uint8_t *out, size_t max_len) {
 // 进入 sniffer 模式
 // sniffer 固件上电默认启动通道 11（zb_sniffer_init 中 start_channel=11），
 // 启动时不发送通道号（避免 Serial.write 影响 RX），如需切换通道用 /api/sniffer/channel。
-void enterSnifferMode(uint8_t channel, uint32_t baud) {
+bool enterSnifferMode(uint8_t channel, uint32_t baud) {
+  // 动态分配 sniffer 缓冲（IDLE 时不占用堆，给上传/烧录留内存）
+  if (!g_sniffer_buf) {
+    g_sniffer_buf = (uint8_t*)malloc(SNIFFER_BUFFER_SIZE);
+    if (!g_sniffer_buf) {
+      return false;  // 内存不足
+    }
+  }
   // 先复位 CC2530（在 Serial 切换前，确保 sniffer 固件从干净状态启动）
   // 实测：不加复位时 Serial.available() 始终返回 0（与 monitor 模式的关键差异）
   resetCC2530();
@@ -1194,6 +1203,7 @@ void enterSnifferMode(uint8_t channel, uint32_t baud) {
   // - 现方案：仅发送 1 字节通道号（数据量小），发送后延迟 200ms + 清空 RX 缓冲
   // - 如实测仍 RX 失效，回退方案：仅支持通道 11（sniffer 固件默认，无需 Serial.write）
   // 注意：sniffer 模式运行期间不要用 Serial.printf/println 调试输出（数据量大可能影响 RX）
+  return true;
 }
 
 // 退出 sniffer 模式
@@ -1205,6 +1215,11 @@ void exitSnifferMode() {
   }
   g_sniffer_client_active = false;
   digitalWrite(LED, LOW);
+  // 释放 sniffer 缓冲（归还给堆，供上传/烧录使用）
+  if (g_sniffer_buf) {
+    free(g_sniffer_buf);
+    g_sniffer_buf = nullptr;
+  }
   // 恢复 Serial 到默认波特率
   Serial.flush();
   Serial.end();
@@ -1392,6 +1407,9 @@ void handleStatus() {
   json += ",\"flash\":{\"sketch_size\":" + String(sketchSize);
   json += ",\"sketch_free\":" + String(sketchFree);
   json += ",\"chip_size\":" + String(ESP.getFlashChipSize()) + "}";
+  // 重启原因 + 空闲堆（诊断烧录崩溃用）
+  json += ",\"reset_reason\":\"" + String(ESP.getResetReason()) + "\"";
+  json += ",\"free_heap\":" + String(ESP.getFreeHeap());
   json += "}";
   server.send(200, "application/json", json);
 }
@@ -1863,11 +1881,14 @@ void handleSnifferStart() {
     server.send(400, "application/json", "{\"error\":\"invalid baud\"}");
     return;
   }
+  if (!enterSnifferMode((uint8_t)channel, (uint32_t)baud)) {
+    server.send(503, "application/json", "{\"error\":\"out of memory\"}");
+    return;
+  }
   String json = "{\"success\":true,\"channel\":" + String((int)channel) +
                 ",\"baud\":" + String((int)baud) +
                 ",\"buffer_size\":" + String(SNIFFER_BUFFER_SIZE) + "}";
   server.send(200, "application/json", json);
-  enterSnifferMode((uint8_t)channel, (uint32_t)baud);
 }
 
 // POST /api/sniffer/channel  切换抓包通道（必须 SNIFFING，且无 stream 客户端连接）
