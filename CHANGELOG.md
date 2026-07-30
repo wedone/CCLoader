@@ -14,6 +14,38 @@
 
 ---
 
+## [1.6] - 2026-07-30
+
+### 新增
+- **编译日期时间戳**：`/api/status` 新增 `build_time` 字段，由编译器
+  `__DATE__ " " __TIME__` 宏自动生成（如 `"Jul 30 2026 22:19:44"`），
+  无需手动维护，用于区分同版本号的不同编译产物
+- **内存信息对象**：`/api/status` 新增 `memory` 对象（`free_heap`/
+  `ram_size`/`ram_used`/`ram_pct`），ESP8266 80KB RAM 占用一目了然
+- **设置页设备信息三卡片布局**：原单卡片拆分为「设备」「固件」「内存」
+  三卡片：设备（名称/IP/运行时长/WiFi信号/重启）、固件（版本/编译日期/
+  Flash占用/复位原因）、内存（空闲堆/RAM占用百分比）
+- **根目录项目文档索引**：整合项目基本信息、文档清单、发版清单、
+  硬件约束、AI 操作准则，新 AI 接手只需读一份文件即可上手
+
+### 变更
+- **版本号宏化**：从硬编码 `"v1.5"` 改为 `FIRMWARE_VERSION` 宏定义，
+  发版时只需修改一处
+- `free_heap` 从 `/api/status` 顶层移入 `memory` 对象（前端兼容旧固件）
+
+### 修复
+- **编译警告消除**：将 IAR 风格的 `#pragma inline` 替换为 GCC 的
+  `inline __attribute__((always_inline))`，消除 `-Wunknown-pragmas` 警告
+- **sniffer 缓冲动态化**：16KB 缓冲从静态数组改为 `malloc`/`free`，
+  IDLE 状态释放内存给上传/烧录使用，避免 RAM 不足导致设备崩溃
+- **handleSnifferStart 先执行后响应**：内存不足时返回 503，
+  避免响应后崩溃
+
+### 版本号
+- 固件版本号 v1.5 → **v1.6**
+
+---
+
 ## [1.5] - 2026-07-30
 
 ### 新增
@@ -167,7 +199,8 @@
 
 ---
 
-[Unreleased]: https://github.com/wedone/CCLoader/compare/v1.5...HEAD
+[Unreleased]: https://github.com/wedone/CCLoader/compare/v1.6...HEAD
+[1.6]: https://github.com/wedone/CCLoader/compare/v1.5...v1.6
 [1.5]: https://github.com/wedone/CCLoader/compare/v1.3...v1.5
 [1.3]: https://github.com/wedone/CCLoader/compare/v1.2...v1.3
 [1.2]: https://github.com/wedone/CCLoader/compare/v1.1...v1.2
