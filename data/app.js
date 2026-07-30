@@ -877,11 +877,10 @@ async function loadConfig() {
 }
 
 function updateDocumentTitle(name) {
-  if (name && name.trim()) {
-    document.title = name.trim();
-  } else {
-    document.title = 'CCLoader WebUI';
-  }
+  const title = (name && name.trim()) ? name.trim() : 'CCLoader WebUI';
+  document.title = title;
+  const headerTitle = document.getElementById('header-title');
+  if (headerTitle) headerTitle.textContent = title;
 }
 
 // ===== WiFi 配网 =====
@@ -1067,7 +1066,16 @@ async function pollStatus() {
       $('firmware-version').textContent = s.version;
     }
     if (s.build_time) {
-      $('build-time').textContent = s.build_time;
+      // 编译日期格式化：Jul 30 2026 22:19:44 -> 2026-07-30 22:19:44
+      const d = new Date(s.build_time);
+      if (!isNaN(d.getTime())) {
+        const pad = n => String(n).padStart(2, '0');
+        $('build-time').textContent = d.getFullYear() + '-' + pad(d.getMonth() + 1) +
+                                      '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' +
+                                      pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+      } else {
+        $('build-time').textContent = s.build_time;  // 解析失败原样显示
+      }
     }
     // 复位原因
     if (s.reset_reason) {
@@ -1084,9 +1092,8 @@ async function pollStatus() {
       // 兼容旧固件：free_heap 在顶层
       $('free-heap').textContent = (s.free_heap / 1024).toFixed(1) + ' KB';
     }
-    // 设备名称显示（设备卡片 + 同步标签页标题）
+    // 设备名称（同步 header 标题和标签页标题）
     if (s.device_name !== undefined) {
-      $('device-name-display').textContent = s.device_name || '(未设置)';
       updateDocumentTitle(s.device_name);
     }
     if (s.monitor) {

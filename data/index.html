@@ -8,7 +8,7 @@
 </head>
 <body>
   <header>
-    <div class="title">CCLoader WebUI</div>
+    <div class="title" id="header-title">CCLoader WebUI</div>
     <div class="status-bar">
       <span id="state-badge" class="badge idle">空闲</span>
       <span id="ip-info">IP: -</span>
@@ -217,26 +217,21 @@
       </div>
 
       <div class="card">
-        <h3>设备</h3>
-        <div>设备名称: <span id="device-name-display">-</span></div>
-        <div>IP 地址: <span id="device-ip">-</span></div>
-        <div>运行时长: <span id="uptime">-</span></div>
-        <div>WiFi 信号: <span id="rssi">-</span> dBm</div>
-        <button id="reboot-btn" class="btn danger">重启 ESP8266</button>
-      </div>
-
-      <div class="card">
         <h3>固件</h3>
         <div>版本号: <span id="firmware-version">-</span></div>
         <div>编译日期: <span id="build-time">-</span></div>
         <div>Flash 占用: <span id="flash-usage">-</span></div>
         <div>复位原因: <span id="reset-reason">-</span></div>
+        <div>空闲堆: <span id="free-heap">-</span></div>
+        <div>RAM 占用: <span id="ram-usage">-</span></div>
       </div>
 
       <div class="card">
-        <h3>内存</h3>
-        <div>空闲堆: <span id="free-heap">-</span></div>
-        <div>RAM 占用: <span id="ram-usage">-</span></div>
+        <h3>设备</h3>
+        <div>IP 地址: <span id="device-ip">-</span></div>
+        <div>运行时长: <span id="uptime">-</span></div>
+        <div>WiFi 信号: <span id="rssi">-</span> dBm</div>
+        <button id="reboot-btn" class="btn danger">重启</button>
       </div>
     </section>
 

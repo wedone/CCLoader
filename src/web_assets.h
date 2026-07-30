@@ -6,7 +6,7 @@
 
 namespace WebAssets {
 
-// index.html (10583 bytes, text/html)
+// index.html (10457 bytes, text/html)
 const char index_html[] PROGMEM = R"=====(
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -18,7 +18,7 @@ const char index_html[] PROGMEM = R"=====(
 </head>
 <body>
   <header>
-    <div class="title">CCLoader WebUI</div>
+    <div class="title" id="header-title">CCLoader WebUI</div>
     <div class="status-bar">
       <span id="state-badge" class="badge idle">空闲</span>
       <span id="ip-info">IP: -</span>
@@ -227,26 +227,21 @@ const char index_html[] PROGMEM = R"=====(
       </div>
 
       <div class="card">
-        <h3>设备</h3>
-        <div>设备名称: <span id="device-name-display">-</span></div>
-        <div>IP 地址: <span id="device-ip">-</span></div>
-        <div>运行时长: <span id="uptime">-</span></div>
-        <div>WiFi 信号: <span id="rssi">-</span> dBm</div>
-        <button id="reboot-btn" class="btn danger">重启 ESP8266</button>
-      </div>
-
-      <div class="card">
         <h3>固件</h3>
         <div>版本号: <span id="firmware-version">-</span></div>
         <div>编译日期: <span id="build-time">-</span></div>
         <div>Flash 占用: <span id="flash-usage">-</span></div>
         <div>复位原因: <span id="reset-reason">-</span></div>
+        <div>空闲堆: <span id="free-heap">-</span></div>
+        <div>RAM 占用: <span id="ram-usage">-</span></div>
       </div>
 
       <div class="card">
-        <h3>内存</h3>
-        <div>空闲堆: <span id="free-heap">-</span></div>
-        <div>RAM 占用: <span id="ram-usage">-</span></div>
+        <h3>设备</h3>
+        <div>IP 地址: <span id="device-ip">-</span></div>
+        <div>运行时长: <span id="uptime">-</span></div>
+        <div>WiFi 信号: <span id="rssi">-</span> dBm</div>
+        <button id="reboot-btn" class="btn danger">重启</button>
       </div>
     </section>
 
@@ -269,7 +264,7 @@ const char index_html[] PROGMEM = R"=====(
 </html>
 
 )=====";
-const size_t index_html_len = 10583;
+const size_t index_html_len = 10457;
 
 // style.css (12261 bytes, text/css)
 const char style_css[] PROGMEM = R"=====(
@@ -791,7 +786,7 @@ select:focus {
 )=====";
 const size_t style_css_len = 12261;
 
-// app.js (54639 bytes, application/javascript)
+// app.js (55179 bytes, application/javascript)
 const char app_js[] PROGMEM = R"=====(
 // CCLoader WebUI 前端逻辑
 // 使用 SSE (EventSource) 接收实时事件，无外部库依赖
@@ -1672,11 +1667,10 @@ async function loadConfig() {
 }
 
 function updateDocumentTitle(name) {
-  if (name && name.trim()) {
-    document.title = name.trim();
-  } else {
-    document.title = 'CCLoader WebUI';
-  }
+  const title = (name && name.trim()) ? name.trim() : 'CCLoader WebUI';
+  document.title = title;
+  const headerTitle = document.getElementById('header-title');
+  if (headerTitle) headerTitle.textContent = title;
 }
 
 // ===== WiFi 配网 =====
@@ -1862,7 +1856,16 @@ async function pollStatus() {
       $('firmware-version').textContent = s.version;
     }
     if (s.build_time) {
-      $('build-time').textContent = s.build_time;
+      // 编译日期格式化：Jul 30 2026 22:19:44 -> 2026-07-30 22:19:44
+      const d = new Date(s.build_time);
+      if (!isNaN(d.getTime())) {
+        const pad = n => String(n).padStart(2, '0');
+        $('build-time').textContent = d.getFullYear() + '-' + pad(d.getMonth() + 1) +
+                                      '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' +
+                                      pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+      } else {
+        $('build-time').textContent = s.build_time;  // 解析失败原样显示
+      }
     }
     // 复位原因
     if (s.reset_reason) {
@@ -1879,9 +1882,8 @@ async function pollStatus() {
       // 兼容旧固件：free_heap 在顶层
       $('free-heap').textContent = (s.free_heap / 1024).toFixed(1) + ' KB';
     }
-    // 设备名称显示（设备卡片 + 同步标签页标题）
+    // 设备名称（同步 header 标题和标签页标题）
     if (s.device_name !== undefined) {
-      $('device-name-display').textContent = s.device_name || '(未设置)';
       updateDocumentTitle(s.device_name);
     }
     if (s.monitor) {
@@ -2321,7 +2323,7 @@ function init() {
 init();
 
 )=====";
-const size_t app_js_len = 54639;
+const size_t app_js_len = 55179;
 
 // config.json (90 bytes, application/json)
 const char config_json[] PROGMEM = R"=====(
