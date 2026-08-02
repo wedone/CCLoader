@@ -443,8 +443,9 @@ bool g_nvreset_pending = false;
 bool g_backup_pending = false;
 
 // 监控日志环形缓冲：支持 Agent 轮询 GET /api/monitor/buffer?since=N
-// 缓存最近 8KB 日志，Agent 可断点续传获取
-#define MONITOR_RING_SIZE 8192
+// 缓存最近 32KB 日志，Agent 可断点续传获取
+// ESP32-SOLO-1 320KB DRAM 充足，从 ESP8266 时代 8KB 扩容到 32KB
+#define MONITOR_RING_SIZE 32768
 uint8_t g_monitor_ring[MONITOR_RING_SIZE];
 uint32_t g_monitor_ring_head = 0;   // 下一个写入位置 (mod SIZE)
 uint32_t g_monitor_ring_total = 0;  // 累计写入字节数（单调递增，不取模）
@@ -453,9 +454,9 @@ uint32_t g_monitor_ring_total = 0;  // 累计写入字节数（单调递增，�
 // ZBOSS sniffer 固件通过 UART0 (P0_3, 115200 8N1) 输出 IEEE 802.15.4 帧
 // ESP32-SOLO-1 Serial2 (IO16 RX) 接收，透传到 PC 端生成 pcap
 // 详见 CCLoader_Sniffer抓包改造需求.md
-#define SNIFFER_BUFFER_SIZE 16384  // 16KB 环形缓冲（阶段3将扩容到 64KB，ESP32-SOLO-1 RAM 充足）
-// 动态分配：IDLE 状态不占用堆，给上传/烧录留出内存
-// enterSnifferMode 时 malloc，exitSnifferMode 时 free
+// 64KB 环形缓冲：ESP32-SOLO-1 320KB DRAM 充足，从 ESP8266 时代 16KB 扩容到 64KB
+// 动态分配（IDLE 时不占堆），缓冲满时丢弃最旧数据并插入丢包标记
+#define SNIFFER_BUFFER_SIZE 65536
 uint8_t* g_sniffer_buf = nullptr;
 volatile uint32_t g_sniffer_head = 0;   // 写入位置 (Serial2 → 缓冲)
 volatile uint32_t g_sniffer_tail = 0;   // 读取位置 (缓冲 → HTTP stream)
