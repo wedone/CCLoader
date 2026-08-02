@@ -51,7 +51,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <HTTPUpdateServer.h>
-#include <uri/UriRegex.h>
+#include <uri/UriBraces.h>
 #include <LittleFS.h>
 #include <FS.h>
 #include <esp_system.h>  // esp_reset_reason() 重启原因诊断
@@ -430,6 +430,10 @@ bool g_upload_rejected_hex = false;  // API 上传 .hex 时拒绝（浏览器端
 // 配网模式标志：AP 模式下为 true，captive portal 启用
 bool g_in_config_mode = false;
 
+// LittleFS 挂载状态：false 时所有文件操作跳过，避免崩溃
+// ESP32 首次烧录后 LittleFS 分区可能未格式化，begin() 失败时尝试 format
+bool g_littlefs_ok = false;
+
 // 设备唯一标识（基于 MAC 后 3 字节 hex，如 "A1B2C3"）
 // 用于 AP 名称和主机名，避免多台设备冲突
 String g_device_uid;
@@ -590,6 +594,7 @@ void loadConfig() {
   g_config.device_name = "";
   g_config.verify = 0;
 
+  if (!g_littlefs_ok) return;  // LittleFS 未挂载，使用默认空配置
   if (LittleFS.exists("/config.json")) {
     File f = LittleFS.open("/config.json", "r");
     if (f) {
@@ -605,6 +610,7 @@ void loadConfig() {
 }
 
 void saveConfig(const String& ssid, const String& pwd, const String& deviceName, uint8_t verify) {
+  if (!g_littlefs_ok) return;  // LittleFS 未挂载，跳过保存
   String json = "{\n";
   json += "  \"wifi_ssid\": \"" + jsonEscape(ssid) + "\",\n";
   json += "  \"wifi_password\": \"" + jsonEscape(pwd) + "\",\n";
@@ -1553,6 +1559,10 @@ void handlePostConfig() {
 
 void handleUpload() {
   HTTPUpload& upload = server.upload();
+  if (!g_littlefs_ok) {
+    g_upload_error = true;
+    return;  // LittleFS 不可用，上传拒绝
+  }
   if (upload.status == UPLOAD_FILE_START) {
     String filename = upload.filename;
     if (filename.length() == 0) filename = "firmware.bin";
@@ -1810,6 +1820,10 @@ void handleMonitorBuffer() {
 }
 
 void handleFiles() {
+  if (!g_littlefs_ok) {
+    server.send(200, "application/json", "{\"success\":true,\"files\":[]}");
+    return;
+  }
   String json = "{\"success\":true,\"files\":[";
   bool first = true;
   File root = LittleFS.open("/");
@@ -2153,9 +2167,9 @@ void initHttpRoutes() {
   server.on("/api/sniffer/stream", HTTP_GET, handleSnifferStream);
   server.on("/api/sniffer/status", HTTP_GET, handleSnifferStatus);
   server.on("/api/files", HTTP_GET, handleFiles);
-  // /api/files/{name} - 用正则通配符
-  server.on(UriRegex("^/api/files/([^/]+)$"), HTTP_GET, handleGetFile);
-  server.on(UriRegex("^/api/files/([^/]+)$"), HTTP_DELETE, handleDeleteFile);
+  // /api/files/{name} - 用 UriBraces 通配符（UriRegex 在 ESP32 std::regex 下会崩溃）
+  server.on(UriBraces("/api/files/{}"), HTTP_GET, handleGetFile);
+  server.on(UriBraces("/api/files/{}"), HTTP_DELETE, handleDeleteFile);
   server.on("/api/wifi/scan", HTTP_GET, handleWifiScan);
   server.on("/api/wifi/connect", HTTP_POST, handleWifiConnect);
   server.on("/api/reboot", HTTP_POST, handleReboot);
@@ -2193,9 +2207,19 @@ void setup() {
   Serial2.begin(115200, SERIAL_8N1, CC_SERIAL_RX, CC_SERIAL_TX);
 
   // 挂载 LittleFS
-  if (!LittleFS.begin()) {
-    Serial.println("LittleFS mount failed!");
-    // 不 return，继续启动以便 AP 模式下可访问
+  // ESP32 首次烧录后 LittleFS 分区可能未格式化，begin() 失败时尝试 format
+  if (LittleFS.begin()) {
+    g_littlefs_ok = true;
+    Serial.println("LittleFS mounted OK");
+  } else {
+    Serial.println("LittleFS mount failed, trying format...");
+    if (LittleFS.format() && LittleFS.begin()) {
+      g_littlefs_ok = true;
+      Serial.println("LittleFS formatted and mounted OK");
+    } else {
+      g_littlefs_ok = false;
+      Serial.println("LittleFS format failed! Running without filesystem (config/save/upload disabled)");
+    }
   }
 
   loadConfig();
