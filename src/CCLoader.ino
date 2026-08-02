@@ -430,6 +430,12 @@ bool g_upload_rejected_hex = false;  // API 上传 .hex 时拒绝（浏览器端
 // 配网模式标志：AP 模式下为 true，captive portal 启用
 bool g_in_config_mode = false;
 
+// 设备唯一标识（基于 MAC 后 3 字节 hex，如 "A1B2C3"）
+// 用于 AP 名称和主机名，避免多台设备冲突
+String g_device_uid;
+String g_default_ap_name;    // "CCLoader-Setup-A1B2C3"
+String g_default_hostname;   // "CCLoader-A1B2C3"
+
 // 异步烧录：POST /api/burn?async=1 立即返回，烧录在 loop() 中执行
 bool g_burn_pending = false;
 String g_burn_pending_filename;
@@ -613,16 +619,42 @@ void saveConfig(const String& ssid, const String& pwd, const String& deviceName,
 }
 
 // ===== WiFi =====
-// 进入配网模式：开放 AP + captive portal，用户连 CCLoader-Setup 后访问任意 URL 配网
+// 生成设备唯一标识：基于 MAC 后 3 字节 hex（如 "A1B2C3"）
+// 多台 CCLoader 共存时避免 AP 名称和主机名冲突
+void initDeviceUid() {
+  uint8_t mac[6];
+  WiFi.macAddress(mac);
+  char uid[8];
+  snprintf(uid, sizeof(uid), "%02X%02X%02X", mac[3], mac[4], mac[5]);
+  g_device_uid = String(uid);
+  g_default_ap_name = "CCLoader-Setup-" + g_device_uid;
+  g_default_hostname = "CCLoader-" + g_device_uid;
+  Serial.printf("Device UID: %s, AP: %s, Hostname: %s\n",
+                g_device_uid.c_str(), g_default_ap_name.c_str(), g_default_hostname.c_str());
+}
+
+// 配置 WiFi 射频参数：最大发射功率 + 禁用节能模式
+// ESP32 默认节能模式会导致 AP 连接不稳定（表现为连不上/频繁断开）
+void applyWifiRadioParams() {
+  WiFi.setSleep(false);                  // 禁用 Modem-sleep，提高稳定性
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);   // 最大发射功率（19.5 dBm）
+}
+
+// 进入配网模式：开放 AP + captive portal，用户连 CCLoader-Setup-XXXXXX 后访问任意 URL 配网
 void enterConfigMode(const char* reason) {
   WiFi.mode(WIFI_AP);
-  WiFi.softAP("CCLoader-Setup");  // 开放 AP，无密码
+  applyWifiRadioParams();
+  // 信道 1，开放 AP，最大连接数 4
+  WiFi.softAP(g_default_ap_name.c_str(), NULL, 1, 0, 4);
   g_in_config_mode = true;
-  Serial.printf("Config mode (%s): AP 'CCLoader-Setup' open, IP: ", reason);
+  Serial.printf("Config mode (%s): AP '%s' open, IP: ",
+                reason, g_default_ap_name.c_str());
   Serial.println(WiFi.softAPIP());
 }
 
 void initWiFi() {
+  initDeviceUid();  // 先生成设备 UID（AP 名/主机名依赖它）
+
   if (g_config.wifi_ssid.length() == 0) {
     // 无配置，进入配网模式
     enterConfigMode("no config");
@@ -630,6 +662,8 @@ void initWiFi() {
   }
   // 有配置，尝试连接 STA
   WiFi.mode(WIFI_STA);
+  WiFi.setHostname(g_default_hostname.c_str());  // 设置主机名（STA 模式生效）
+  applyWifiRadioParams();
   WiFi.begin(g_config.wifi_ssid, g_config.wifi_password);
   Serial.printf("Connecting to %s", g_config.wifi_ssid.c_str());
   int attempts = 0;
@@ -654,6 +688,8 @@ bool switchToStaMode(const String& ssid, const String& pwd) {
   Serial.printf("Trying connect to %s ...\n", ssid.c_str());
   // 临时切换 STA 连接测试
   WiFi.mode(WIFI_STA);
+  WiFi.setHostname(g_default_hostname.c_str());
+  applyWifiRadioParams();
   WiFi.begin(ssid, pwd);
   // 同步等待 8 秒
   unsigned long start = millis();
@@ -679,7 +715,8 @@ bool switchToStaMode(const String& ssid, const String& pwd) {
   Serial.println("Connect failed, back to config mode");
   WiFi.disconnect();
   WiFi.mode(WIFI_AP);
-  WiFi.softAP("CCLoader-Setup");
+  applyWifiRadioParams();
+  WiFi.softAP(g_default_ap_name.c_str(), NULL, 1, 0, 4);
   return false;
 }
 
@@ -1460,6 +1497,17 @@ void handleStatus() {
   json += ",\"ram_size\":" + String(ramSize);
   json += ",\"ram_used\":" + String(ramUsed);
   json += ",\"ram_pct\":" + String(ramPct, 1) + "}";
+  // 硬件信息：芯片型号/版本/CPU频率/MAC/主机名/AP名称
+  json += ",\"hardware\":{";
+  json += "\"chip_model\":\"ESP32-S0WD\"";  // ESP32-SOLO-1 单核
+  json += ",\"chip_revision\":" + String(ESP.getChipRevision());
+  json += ",\"cpu_freq\":" + String(ESP.getCpuFreqMHz());
+  json += ",\"flash_size\":" + String(ESP.getFlashChipSize());
+  json += ",\"mac\":\"" + WiFi.macAddress() + "\"";
+  json += ",\"hostname\":\"" + jsonEscape(WiFi.getHostname()) + "\"";
+  json += ",\"ap_name\":\"" + jsonEscape(g_default_ap_name) + "\"";
+  json += ",\"sdk_version\":\"" + jsonEscape(ESP.getSdkVersion()) + "\"";
+  json += "}";
   // 重启原因（诊断烧录崩溃用）
   json += ",\"reset_reason\":\"" + jsonEscape(getResetReasonStr()) + "\"";
   json += "}";

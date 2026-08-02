@@ -1036,13 +1036,14 @@ async function pollStatus() {
     if (s.wifi) {
       $('ip-info').textContent = 'IP: ' + s.wifi.ip;
       $('device-ip').textContent = s.wifi.ip;
-      $('rssi').textContent = s.wifi.rssi;
+      $('rssi').textContent = s.wifi.rssi !== undefined ? s.wifi.rssi + ' dBm' : '-';
     }
     // 配网模式提示
     if (s.config_mode !== undefined) {
       const hint = $('wifi-mode-hint');
       if (s.config_mode) {
-        hint.innerHTML = '<strong style="color: var(--warning)">配网模式</strong>：ESP32-SOLO-1 开放 AP "CCLoader-Setup"，请保持电脑/手机连此 AP 完成配网';
+        const apName = (s.hardware && s.hardware.ap_name) || 'CCLoader-Setup-XXXXXX';
+        hint.innerHTML = '<strong style="color: var(--warning)">配网模式</strong>：开放 AP "' + apName + '"，请保持电脑/手机连此 AP 完成配网';
       } else if (s.wifi && s.wifi.mode === 'sta') {
         hint.innerHTML = '<strong style="color: var(--success)">STA 模式</strong>：已连接 ' + (s.wifi.ssid || '') + '，IP ' + (s.wifi.ip || '-');
       } else {
@@ -1091,6 +1092,17 @@ async function pollStatus() {
     } else if (s.free_heap !== undefined) {
       // 兼容旧固件：free_heap 在顶层
       $('free-heap').textContent = (s.free_heap / 1024).toFixed(1) + ' KB';
+    }
+    // 硬件信息（新增）
+    if (s.hardware) {
+      $('chip-model').textContent = s.hardware.chip_model || '-';
+      $('chip-revision').textContent = 'rev ' + (s.hardware.chip_revision !== undefined ? s.hardware.chip_revision : '-');
+      $('cpu-freq').textContent = s.hardware.cpu_freq !== undefined ? s.hardware.cpu_freq + ' MHz' : '-';
+      $('flash-size-info').textContent = s.hardware.flash_size ? (s.hardware.flash_size / 1024 / 1024).toFixed(0) + ' MB' : '-';
+      $('mac-info').textContent = s.hardware.mac || '-';
+      $('hostname-info').textContent = s.hardware.hostname || '-';
+      $('ap-name-info').textContent = s.hardware.ap_name || '-';
+      $('sdk-version').textContent = s.hardware.sdk_version || '-';
     }
     // 设备名称（同步 header 标题和标签页标题）
     if (s.device_name !== undefined) {

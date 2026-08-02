@@ -196,8 +196,15 @@
       <h2>设置</h2>
 
       <div class="card">
-        <h3>WiFi 配网</h3>
+        <h3>网络信息</h3>
         <div id="wifi-mode-hint" class="hint"></div>
+        <div class="info-grid">
+          <div><span class="info-label">IP 地址</span><span id="device-ip" class="info-value">-</span></div>
+          <div><span class="info-label">主机名</span><span id="hostname-info" class="info-value">-</span></div>
+          <div><span class="info-label">MAC 地址</span><span id="mac-info" class="info-value">-</span></div>
+          <div><span class="info-label">WiFi 信号</span><span id="rssi" class="info-value">-</span></div>
+          <div><span class="info-label">配网 AP</span><span id="ap-name-info" class="info-value">-</span></div>
+        </div>
         <div class="wifi-scan-row">
           <button id="wifi-scan-btn" class="btn">扫描网络</button>
           <span id="wifi-scan-status" class="progress-text"></span>
@@ -210,27 +217,41 @@
       </div>
 
       <div class="card">
-        <h3>设备名称</h3>
+        <h3>硬件信息</h3>
+        <div class="info-grid">
+          <div><span class="info-label">芯片型号</span><span id="chip-model" class="info-value">-</span></div>
+          <div><span class="info-label">芯片版本</span><span id="chip-revision" class="info-value">-</span></div>
+          <div><span class="info-label">CPU 频率</span><span id="cpu-freq" class="info-value">-</span></div>
+          <div><span class="info-label">Flash 大小</span><span id="flash-size-info" class="info-value">-</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>软件信息</h3>
+        <div class="info-grid">
+          <div><span class="info-label">固件版本</span><span id="firmware-version" class="info-value">-</span></div>
+          <div><span class="info-label">编译日期</span><span id="build-time" class="info-value">-</span></div>
+          <div><span class="info-label">SDK 版本</span><span id="sdk-version" class="info-value">-</span></div>
+          <div><span class="info-label">运行时长</span><span id="uptime" class="info-value">-</span></div>
+          <div><span class="info-label">复位原因</span><span id="reset-reason" class="info-value">-</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>内存信息</h3>
+        <div class="info-grid">
+          <div><span class="info-label">空闲堆</span><span id="free-heap" class="info-value">-</span></div>
+          <div><span class="info-label">RAM 占用</span><span id="ram-usage" class="info-value">-</span></div>
+          <div><span class="info-label">Flash 占用</span><span id="flash-usage" class="info-value">-</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>设备设置</h3>
         <label>主机名: <input type="text" id="device-name-input" placeholder="如：烧录器A（显示在浏览器标签页）" maxlength="32"></label>
         <button id="save-device-name-btn" class="btn primary">保存</button>
         <div class="hint">修改后浏览器标签页标题立即更新，用于区分多个烧录器</div>
-      </div>
-
-      <div class="card">
-        <h3>固件</h3>
-        <div>版本号: <span id="firmware-version">-</span></div>
-        <div>编译日期: <span id="build-time">-</span></div>
-        <div>Flash 占用: <span id="flash-usage">-</span></div>
-        <div>复位原因: <span id="reset-reason">-</span></div>
-        <div>空闲堆: <span id="free-heap">-</span></div>
-        <div>RAM 占用: <span id="ram-usage">-</span></div>
-      </div>
-
-      <div class="card">
-        <h3>设备</h3>
-        <div>IP 地址: <span id="device-ip">-</span></div>
-        <div>运行时长: <span id="uptime">-</span></div>
-        <div>WiFi 信号: <span id="rssi">-</span> dBm</div>
+        <hr>
         <button id="reboot-btn" class="btn danger">重启</button>
       </div>
     </section>

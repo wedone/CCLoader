@@ -6,7 +6,7 @@
 
 namespace WebAssets {
 
-// index.html (10457 bytes, text/html)
+// index.html (12116 bytes, text/html)
 const char index_html[] PROGMEM = R"=====(
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -206,8 +206,15 @@ const char index_html[] PROGMEM = R"=====(
       <h2>设置</h2>
 
       <div class="card">
-        <h3>WiFi 配网</h3>
+        <h3>网络信息</h3>
         <div id="wifi-mode-hint" class="hint"></div>
+        <div class="info-grid">
+          <div><span class="info-label">IP 地址</span><span id="device-ip" class="info-value">-</span></div>
+          <div><span class="info-label">主机名</span><span id="hostname-info" class="info-value">-</span></div>
+          <div><span class="info-label">MAC 地址</span><span id="mac-info" class="info-value">-</span></div>
+          <div><span class="info-label">WiFi 信号</span><span id="rssi" class="info-value">-</span></div>
+          <div><span class="info-label">配网 AP</span><span id="ap-name-info" class="info-value">-</span></div>
+        </div>
         <div class="wifi-scan-row">
           <button id="wifi-scan-btn" class="btn">扫描网络</button>
           <span id="wifi-scan-status" class="progress-text"></span>
@@ -220,27 +227,41 @@ const char index_html[] PROGMEM = R"=====(
       </div>
 
       <div class="card">
-        <h3>设备名称</h3>
+        <h3>硬件信息</h3>
+        <div class="info-grid">
+          <div><span class="info-label">芯片型号</span><span id="chip-model" class="info-value">-</span></div>
+          <div><span class="info-label">芯片版本</span><span id="chip-revision" class="info-value">-</span></div>
+          <div><span class="info-label">CPU 频率</span><span id="cpu-freq" class="info-value">-</span></div>
+          <div><span class="info-label">Flash 大小</span><span id="flash-size-info" class="info-value">-</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>软件信息</h3>
+        <div class="info-grid">
+          <div><span class="info-label">固件版本</span><span id="firmware-version" class="info-value">-</span></div>
+          <div><span class="info-label">编译日期</span><span id="build-time" class="info-value">-</span></div>
+          <div><span class="info-label">SDK 版本</span><span id="sdk-version" class="info-value">-</span></div>
+          <div><span class="info-label">运行时长</span><span id="uptime" class="info-value">-</span></div>
+          <div><span class="info-label">复位原因</span><span id="reset-reason" class="info-value">-</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>内存信息</h3>
+        <div class="info-grid">
+          <div><span class="info-label">空闲堆</span><span id="free-heap" class="info-value">-</span></div>
+          <div><span class="info-label">RAM 占用</span><span id="ram-usage" class="info-value">-</span></div>
+          <div><span class="info-label">Flash 占用</span><span id="flash-usage" class="info-value">-</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>设备设置</h3>
         <label>主机名: <input type="text" id="device-name-input" placeholder="如：烧录器A（显示在浏览器标签页）" maxlength="32"></label>
         <button id="save-device-name-btn" class="btn primary">保存</button>
         <div class="hint">修改后浏览器标签页标题立即更新，用于区分多个烧录器</div>
-      </div>
-
-      <div class="card">
-        <h3>固件</h3>
-        <div>版本号: <span id="firmware-version">-</span></div>
-        <div>编译日期: <span id="build-time">-</span></div>
-        <div>Flash 占用: <span id="flash-usage">-</span></div>
-        <div>复位原因: <span id="reset-reason">-</span></div>
-        <div>空闲堆: <span id="free-heap">-</span></div>
-        <div>RAM 占用: <span id="ram-usage">-</span></div>
-      </div>
-
-      <div class="card">
-        <h3>设备</h3>
-        <div>IP 地址: <span id="device-ip">-</span></div>
-        <div>运行时长: <span id="uptime">-</span></div>
-        <div>WiFi 信号: <span id="rssi">-</span> dBm</div>
+        <hr>
         <button id="reboot-btn" class="btn danger">重启</button>
       </div>
     </section>
@@ -264,9 +285,9 @@ const char index_html[] PROGMEM = R"=====(
 </html>
 
 )=====";
-const size_t index_html_len = 10457;
+const size_t index_html_len = 12116;
 
-// style.css (12261 bytes, text/css)
+// style.css (12790 bytes, text/css)
 const char style_css[] PROGMEM = R"=====(
 /* CCLoader WebUI - 暗色主题响应式样式 */
 
@@ -482,6 +503,32 @@ select:focus {
 /* WiFi 配网 */
 .hint { color: var(--text-muted); font-size: 12px; margin-top: 6px; }
 .wifi-scan-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+
+/* 设置页信息网格 */
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px 16px;
+  margin-bottom: 12px;
+}
+.info-grid > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.info-label {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  margin-right: 12px;
+}
+.info-value {
+  font-family: var(--mono-font, monospace);
+  text-align: right;
+  word-break: break-all;
+}
 .wifi-list {
   max-height: 220px;
   overflow-y: auto;
@@ -784,9 +831,9 @@ select:focus {
 .pkt-crc-bad { color: var(--danger); }
 
 )=====";
-const size_t style_css_len = 12261;
+const size_t style_css_len = 12790;
 
-// app.js (55219 bytes, application/javascript)
+// app.js (56076 bytes, application/javascript)
 const char app_js[] PROGMEM = R"=====(
 // CCLoader WebUI 前端逻辑
 // 使用 SSE (EventSource) 接收实时事件，无外部库依赖
@@ -1826,13 +1873,14 @@ async function pollStatus() {
     if (s.wifi) {
       $('ip-info').textContent = 'IP: ' + s.wifi.ip;
       $('device-ip').textContent = s.wifi.ip;
-      $('rssi').textContent = s.wifi.rssi;
+      $('rssi').textContent = s.wifi.rssi !== undefined ? s.wifi.rssi + ' dBm' : '-';
     }
     // 配网模式提示
     if (s.config_mode !== undefined) {
       const hint = $('wifi-mode-hint');
       if (s.config_mode) {
-        hint.innerHTML = '<strong style="color: var(--warning)">配网模式</strong>：ESP32-SOLO-1 开放 AP "CCLoader-Setup"，请保持电脑/手机连此 AP 完成配网';
+        const apName = (s.hardware && s.hardware.ap_name) || 'CCLoader-Setup-XXXXXX';
+        hint.innerHTML = '<strong style="color: var(--warning)">配网模式</strong>：开放 AP "' + apName + '"，请保持电脑/手机连此 AP 完成配网';
       } else if (s.wifi && s.wifi.mode === 'sta') {
         hint.innerHTML = '<strong style="color: var(--success)">STA 模式</strong>：已连接 ' + (s.wifi.ssid || '') + '，IP ' + (s.wifi.ip || '-');
       } else {
@@ -1881,6 +1929,17 @@ async function pollStatus() {
     } else if (s.free_heap !== undefined) {
       // 兼容旧固件：free_heap 在顶层
       $('free-heap').textContent = (s.free_heap / 1024).toFixed(1) + ' KB';
+    }
+    // 硬件信息（新增）
+    if (s.hardware) {
+      $('chip-model').textContent = s.hardware.chip_model || '-';
+      $('chip-revision').textContent = 'rev ' + (s.hardware.chip_revision !== undefined ? s.hardware.chip_revision : '-');
+      $('cpu-freq').textContent = s.hardware.cpu_freq !== undefined ? s.hardware.cpu_freq + ' MHz' : '-';
+      $('flash-size-info').textContent = s.hardware.flash_size ? (s.hardware.flash_size / 1024 / 1024).toFixed(0) + ' MB' : '-';
+      $('mac-info').textContent = s.hardware.mac || '-';
+      $('hostname-info').textContent = s.hardware.hostname || '-';
+      $('ap-name-info').textContent = s.hardware.ap_name || '-';
+      $('sdk-version').textContent = s.hardware.sdk_version || '-';
     }
     // 设备名称（同步 header 标题和标签页标题）
     if (s.device_name !== undefined) {
@@ -2323,7 +2382,7 @@ function init() {
 init();
 
 )=====";
-const size_t app_js_len = 55219;
+const size_t app_js_len = 56076;
 
 // config.json (90 bytes, application/json)
 const char config_json[] PROGMEM = R"=====(
@@ -2337,7 +2396,7 @@ const char config_json[] PROGMEM = R"=====(
 )=====";
 const size_t config_json_len = 90;
 
-// help.md (17819 bytes, text/markdown; charset=utf-8)
+// help.md (17862 bytes, text/markdown; charset=utf-8)
 const char help_md[] PROGMEM = R"=====(
 # CCLoader WebUI 帮助
 
@@ -2613,7 +2672,7 @@ curl -F "image=@.pio/build/esp32solo1/firmware.bin" http://10.0.0.147/update
    python -m platformio run -e esp32solo1 -t upload --upload-port COM5
    ```
 3. 给 CC2530 通电（ESP32-SOLO-1 双串口架构，烧录时无需拔掉任何线）
-4. 手机/电脑连 WiFi `CCLoader-Setup`（首次无密码）
+4. 手机/电脑连 WiFi `CCLoader-Setup-XXXXXX`（XXXXXX 为设备 MAC 后 3 字节，首次无密码）
 5. 浏览器访问 `http://192.168.4.1/`，在"设置"页配 WiFi
 6. 连上 WiFi 后，访问 ESP32-SOLO-1 的新 IP 即可使用
 
@@ -2722,6 +2781,6 @@ A: 烧录成功后延时 3 秒自动调用 /api/reboot 重启 ESP32-SOLO-1，可
 A: 在 WebUI 烧录区点击"清除配网"按钮，或直接调用 `POST /api/nvreset`。流程：读取 CC2530 全部 Flash 到临时文件 → 清除尾部 NV 区域（最后 4KB）→ 全片擦除 → 写回。固件保留，仅清除配网信息，设备需要重新加入 Zigbee 网络。整个过程约 2 分钟，进度通过进度条显示。
 
 )=====";
-const size_t help_md_len = 17819;
+const size_t help_md_len = 17862;
 
 }  // namespace WebAssets

@@ -212,6 +212,32 @@ select:focus {
 /* WiFi 配网 */
 .hint { color: var(--text-muted); font-size: 12px; margin-top: 6px; }
 .wifi-scan-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+
+/* 设置页信息网格 */
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px 16px;
+  margin-bottom: 12px;
+}
+.info-grid > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.info-label {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  margin-right: 12px;
+}
+.info-value {
+  font-family: var(--mono-font, monospace);
+  text-align: right;
+  word-break: break-all;
+}
 .wifi-list {
   max-height: 220px;
   overflow-y: auto;
