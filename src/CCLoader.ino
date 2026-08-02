@@ -621,16 +621,18 @@ void saveConfig(const String& ssid, const String& pwd, const String& deviceName,
 // ===== WiFi =====
 // 生成设备唯一标识：基于 MAC 后 3 字节 hex（如 "A1B2C3"）
 // 多台 CCLoader 共存时避免 AP 名称和主机名冲突
+// 注意：必须在 WiFi.mode() 之后调用，否则 MAC 未初始化返回 FFFFFF
 void initDeviceUid() {
   uint8_t mac[6];
   WiFi.macAddress(mac);
   char uid[8];
   snprintf(uid, sizeof(uid), "%02X%02X%02X", mac[3], mac[4], mac[5]);
   g_device_uid = String(uid);
-  g_default_ap_name = "CCLoader-Setup-" + g_device_uid;
+  g_default_ap_name = "CCLoader-" + g_device_uid;
   g_default_hostname = "CCLoader-" + g_device_uid;
-  Serial.printf("Device UID: %s, AP: %s, Hostname: %s\n",
-                g_device_uid.c_str(), g_default_ap_name.c_str(), g_default_hostname.c_str());
+  Serial.printf("Device UID: %s, AP: %s, Hostname: %s, MAC: %s\n",
+                g_device_uid.c_str(), g_default_ap_name.c_str(),
+                g_default_hostname.c_str(), WiFi.macAddress().c_str());
 }
 
 // 配置 WiFi 射频参数：最大发射功率 + 禁用节能模式
@@ -640,9 +642,11 @@ void applyWifiRadioParams() {
   WiFi.setTxPower(WIFI_POWER_19_5dBm);   // 最大发射功率（19.5 dBm）
 }
 
-// 进入配网模式：开放 AP + captive portal，用户连 CCLoader-Setup-XXXXXX 后访问任意 URL 配网
+// 进入配网模式：开放 AP + captive portal
+// 使用 WIFI_AP_STA 模式：AP 持续在线，STA 可同时扫描网络
+// （WIFI_AP 模式下 scanNetworks 会临时切 STA 导致 AP 断开，反复扫描会使 WiFi 状态混乱）
 void enterConfigMode(const char* reason) {
-  WiFi.mode(WIFI_AP);
+  WiFi.mode(WIFI_AP_STA);
   applyWifiRadioParams();
   // 信道 1，开放 AP，最大连接数 4
   WiFi.softAP(g_default_ap_name.c_str(), NULL, 1, 0, 4);
@@ -653,14 +657,18 @@ void enterConfigMode(const char* reason) {
 }
 
 void initWiFi() {
-  initDeviceUid();  // 先生成设备 UID（AP 名/主机名依赖它）
+  // 先设置 AP_STA 模式，确保 MAC 就绪（mode 之前 macAddress 返回 FFFFFF）
+  WiFi.mode(WIFI_AP_STA);
+  delay(10);
+  initDeviceUid();  // MAC 已就绪，生成设备 UID
 
   if (g_config.wifi_ssid.length() == 0) {
-    // 无配置，进入配网模式
+    // 无配置，进入配网模式（AP_STA，AP 可用 + STA 可扫描）
     enterConfigMode("no config");
     return;
   }
-  // 有配置，尝试连接 STA
+  // 有配置，关闭 AP，切到纯 STA 模式连接
+  WiFi.softAPdisconnect(true);
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(g_default_hostname.c_str());  // 设置主机名（STA 模式生效）
   applyWifiRadioParams();
@@ -687,6 +695,7 @@ void initWiFi() {
 bool switchToStaMode(const String& ssid, const String& pwd) {
   Serial.printf("Trying connect to %s ...\n", ssid.c_str());
   // 临时切换 STA 连接测试
+  WiFi.softAPdisconnect(true);  // 关闭 AP
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(g_default_hostname.c_str());
   applyWifiRadioParams();
@@ -711,12 +720,10 @@ bool switchToStaMode(const String& ssid, const String& pwd) {
     g_config.wifi_password = pwd;
     return true;
   }
-  // 连接失败，回到 AP 配网模式
+  // 连接失败，回到 AP 配网模式（AP_STA，支持扫描）
   Serial.println("Connect failed, back to config mode");
   WiFi.disconnect();
-  WiFi.mode(WIFI_AP);
-  applyWifiRadioParams();
-  WiFi.softAP(g_default_ap_name.c_str(), NULL, 1, 0, 4);
+  enterConfigMode("connect failed");
   return false;
 }
 

@@ -1042,7 +1042,7 @@ async function pollStatus() {
     if (s.config_mode !== undefined) {
       const hint = $('wifi-mode-hint');
       if (s.config_mode) {
-        const apName = (s.hardware && s.hardware.ap_name) || 'CCLoader-Setup-XXXXXX';
+        const apName = (s.hardware && s.hardware.ap_name) || 'CCLoader-XXXXXX';
         hint.innerHTML = '<strong style="color: var(--warning)">配网模式</strong>：开放 AP "' + apName + '"，请保持电脑/手机连此 AP 完成配网';
       } else if (s.wifi && s.wifi.mode === 'sta') {
         hint.innerHTML = '<strong style="color: var(--success)">STA 模式</strong>：已连接 ' + (s.wifi.ssid || '') + '，IP ' + (s.wifi.ip || '-');

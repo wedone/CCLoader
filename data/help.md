@@ -272,7 +272,7 @@ curl -F "image=@.pio/build/esp32solo1/firmware.bin" http://10.0.0.147/update
    python -m platformio run -e esp32solo1 -t upload --upload-port COM5
    ```
 3. 给 CC2530 通电（ESP32-SOLO-1 双串口架构，烧录时无需拔掉任何线）
-4. 手机/电脑连 WiFi `CCLoader-Setup-XXXXXX`（XXXXXX 为设备 MAC 后 3 字节，首次无密码）
+4. 手机/电脑连 WiFi `CCLoader-XXXXXX`（XXXXXX 为设备 MAC 后 3 字节，首次无密码）
 5. 浏览器访问 `http://192.168.4.1/`，在"设置"页配 WiFi
 6. 连上 WiFi 后，访问 ESP32-SOLO-1 的新 IP 即可使用
 

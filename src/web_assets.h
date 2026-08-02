@@ -833,7 +833,7 @@ select:focus {
 )=====";
 const size_t style_css_len = 12790;
 
-// app.js (56076 bytes, application/javascript)
+// app.js (56070 bytes, application/javascript)
 const char app_js[] PROGMEM = R"=====(
 // CCLoader WebUI 前端逻辑
 // 使用 SSE (EventSource) 接收实时事件，无外部库依赖
@@ -1879,7 +1879,7 @@ async function pollStatus() {
     if (s.config_mode !== undefined) {
       const hint = $('wifi-mode-hint');
       if (s.config_mode) {
-        const apName = (s.hardware && s.hardware.ap_name) || 'CCLoader-Setup-XXXXXX';
+        const apName = (s.hardware && s.hardware.ap_name) || 'CCLoader-XXXXXX';
         hint.innerHTML = '<strong style="color: var(--warning)">配网模式</strong>：开放 AP "' + apName + '"，请保持电脑/手机连此 AP 完成配网';
       } else if (s.wifi && s.wifi.mode === 'sta') {
         hint.innerHTML = '<strong style="color: var(--success)">STA 模式</strong>：已连接 ' + (s.wifi.ssid || '') + '，IP ' + (s.wifi.ip || '-');
@@ -2382,7 +2382,7 @@ function init() {
 init();
 
 )=====";
-const size_t app_js_len = 56076;
+const size_t app_js_len = 56070;
 
 // config.json (90 bytes, application/json)
 const char config_json[] PROGMEM = R"=====(
@@ -2396,7 +2396,7 @@ const char config_json[] PROGMEM = R"=====(
 )=====";
 const size_t config_json_len = 90;
 
-// help.md (17862 bytes, text/markdown; charset=utf-8)
+// help.md (17856 bytes, text/markdown; charset=utf-8)
 const char help_md[] PROGMEM = R"=====(
 # CCLoader WebUI 帮助
 
@@ -2672,7 +2672,7 @@ curl -F "image=@.pio/build/esp32solo1/firmware.bin" http://10.0.0.147/update
    python -m platformio run -e esp32solo1 -t upload --upload-port COM5
    ```
 3. 给 CC2530 通电（ESP32-SOLO-1 双串口架构，烧录时无需拔掉任何线）
-4. 手机/电脑连 WiFi `CCLoader-Setup-XXXXXX`（XXXXXX 为设备 MAC 后 3 字节，首次无密码）
+4. 手机/电脑连 WiFi `CCLoader-XXXXXX`（XXXXXX 为设备 MAC 后 3 字节，首次无密码）
 5. 浏览器访问 `http://192.168.4.1/`，在"设置"页配 WiFi
 6. 连上 WiFi 后，访问 ESP32-SOLO-1 的新 IP 即可使用
 
@@ -2781,6 +2781,6 @@ A: 烧录成功后延时 3 秒自动调用 /api/reboot 重启 ESP32-SOLO-1，可
 A: 在 WebUI 烧录区点击"清除配网"按钮，或直接调用 `POST /api/nvreset`。流程：读取 CC2530 全部 Flash 到临时文件 → 清除尾部 NV 区域（最后 4KB）→ 全片擦除 → 写回。固件保留，仅清除配网信息，设备需要重新加入 Zigbee 网络。整个过程约 2 分钟，进度通过进度条显示。
 
 )=====";
-const size_t help_md_len = 17862;
+const size_t help_md_len = 17856;
 
 }  // namespace WebAssets
