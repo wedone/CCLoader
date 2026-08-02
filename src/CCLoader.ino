@@ -43,12 +43,13 @@
  ******************************************************************************/
 
 #include <Arduino.h>
-#include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h>
-#include <ESP8266HTTPUpdateServer.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <HTTPUpdateServer.h>
 #include <uri/UriRegex.h>
 #include <LittleFS.h>
 #include <FS.h>
+#include <esp_system.h>  // esp_reset_reason() 重启原因诊断
 #include "web_assets.h"  // 内嵌 WebUI 静态资源（OTA 升级时一并更新）
 
 /******************************************************************************
@@ -373,9 +374,9 @@ enum CCLoaderState {
 CCLoaderState g_state = STATE_IDLE;
 
 // 全局对象：HTTP 服务器（80），SSE 服务器（81）
-ESP8266WebServer server(80);
+WebServer server(80);
 WiFiServer sseServer(81);
-ESP8266HTTPUpdateServer httpUpdater;  // OTA 升级服务（/update）
+HTTPUpdateServer httpUpdater;  // OTA 升级服务（/update）
 #define SSE_MAX_CLIENTS 4
 WiFiClient sseClients[SSE_MAX_CLIENTS];
 bool sseActive[SSE_MAX_CLIENTS] = {false, false, false, false};
@@ -410,7 +411,7 @@ unsigned long g_monitor_last_push = 0;
 
 // 上传文件名（WRITE 阶段需要复用，不能用局部变量）
 String g_upload_filename;
-fs::File g_upload_file;
+File g_upload_file;
 bool g_upload_error = false;
 bool g_upload_rejected_hex = false;  // API 上传 .hex 时拒绝（浏览器端会自动 hex2bin，API 不会）
 
@@ -571,7 +572,7 @@ void loadConfig() {
   g_config.verify = 0;
 
   if (LittleFS.exists("/config.json")) {
-    fs::File f = LittleFS.open("/config.json", "r");
+    File f = LittleFS.open("/config.json", "r");
     if (f) {
       String s;
       while (f.available() && s.length() < 1024) s += (char)f.read();
@@ -591,7 +592,7 @@ void saveConfig(const String& ssid, const String& pwd, const String& deviceName,
   json += "  \"device_name\": \"" + jsonEscape(deviceName) + "\",\n";
   json += "  \"verify\": " + String(verify ? "true" : "false") + "\n";
   json += "}\n";
-  fs::File f = LittleFS.open("/config.json", "w");
+  File f = LittleFS.open("/config.json", "w");
   if (f) {
     f.print(json);
     f.close();
@@ -770,7 +771,7 @@ void pushMonitorData() {
 
 // ===== 烧录：从 LittleFS 读取 BIN 烧录到 CC2530 =====
 void burnFromLittleFS(const String& filename, bool verify) {
-  fs::File f = LittleFS.open("/" + filename, "r");
+  File f = LittleFS.open("/" + filename, "r");
   if (!f) {
     g_burn.error = "file not found: " + filename;
     g_burn.done = true;
@@ -889,7 +890,7 @@ void nvResetCC2530() {
   if (LittleFS.exists(tmpFile)) LittleFS.remove(tmpFile);
 
   // Phase 1: 读取 CC2530 全部 Flash 到 LittleFS 临时文件
-  fs::File f = LittleFS.open(tmpFile, "w");
+  File f = LittleFS.open(tmpFile, "w");
   if (!f) {
     g_burn.error = "cannot create temp file";
     g_burn.done = true;
@@ -1012,7 +1013,7 @@ void backupCC2530() {
   debug_init();
 
   // 创建输出文件
-  fs::File f = LittleFS.open("/" + String(filename), "w");
+  File f = LittleFS.open("/" + String(filename), "w");
   if (!f) {
     g_burn.error = "cannot create file";
     g_burn.done = true;
@@ -1117,12 +1118,12 @@ void snifferWrite(const uint8_t *data, size_t len) {
     if (next == g_sniffer_tail) {
       // 缓冲满，丢弃最旧数据
       g_sniffer_tail = (g_sniffer_tail + 1) % SNIFFER_BUFFER_SIZE;
-      g_sniffer_drop_bytes++;
-      g_sniffer_drop_accum++;
+      g_sniffer_drop_bytes = g_sniffer_drop_bytes + 1;
+      g_sniffer_drop_accum = g_sniffer_drop_accum + 1;
       // 累计 1024 字节丢弃，插入标记包（ZBOSS 头格式，type=0xFF）
       if (g_sniffer_drop_accum >= 1024) {
         g_sniffer_drop_accum = 0;
-        g_sniffer_drop_count++;
+        g_sniffer_drop_count = g_sniffer_drop_count + 1;
         // 标记包：len=8, type=0xFF, tail=0x0000, dropped_bytes(大端 4 字节)
         uint8_t marker[8];
         marker[0] = 8;
@@ -1140,7 +1141,7 @@ void snifferWrite(const uint8_t *data, size_t len) {
     }
     g_sniffer_buf[g_sniffer_head] = data[i];
     g_sniffer_head = next;
-    g_sniffer_total_rx++;
+    g_sniffer_total_rx = g_sniffer_total_rx + 1;
   }
 }
 
@@ -1251,11 +1252,11 @@ void handleSniffing() {
     if (next == g_sniffer_tail) {
       // 缓冲满，丢弃最旧数据
       g_sniffer_tail = (g_sniffer_tail + 1) % SNIFFER_BUFFER_SIZE;
-      g_sniffer_drop_bytes++;
-      g_sniffer_drop_accum++;
+      g_sniffer_drop_bytes = g_sniffer_drop_bytes + 1;
+      g_sniffer_drop_accum = g_sniffer_drop_accum + 1;
       if (g_sniffer_drop_accum >= 1024) {
         g_sniffer_drop_accum = 0;
-        g_sniffer_drop_count++;
+        g_sniffer_drop_count = g_sniffer_drop_count + 1;
         // 插入丢包标记包（简化处理，直接覆盖）
         uint8_t marker[8] = {8, 0xFF, 0x00, 0x00,
                              (uint8_t)(g_sniffer_drop_bytes >> 24),
@@ -1272,7 +1273,7 @@ void handleSniffing() {
     }
     g_sniffer_buf[g_sniffer_head] = ch;
     g_sniffer_head = next;
-    g_sniffer_total_rx++;
+    g_sniffer_total_rx = g_sniffer_total_rx + 1;
     readThisCall++;
   }
 }
@@ -1359,6 +1360,28 @@ void handleHelp() {
   sendChunked_P("text/plain; charset=utf-8", WebAssets::help_md, WebAssets::help_md_len);
 }
 
+// 重启原因枚举转字符串（ESP32 使用 esp_reset_reason() API）
+String getResetReasonStr() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:    return "Power on";
+    case ESP_RST_EXT:        return "External reset";
+    case ESP_RST_SW:         return "Software restart";
+    case ESP_RST_PANIC:      return "Panic";
+    case ESP_RST_INT_WDT:    return "Interrupt watchdog";
+    case ESP_RST_TASK_WDT:   return "Task watchdog";
+    case ESP_RST_WDT:        return "Watchdog";
+    case ESP_RST_DEEPSLEEP:  return "Deep sleep";
+    case ESP_RST_BROWNOUT:   return "Brownout";
+    case ESP_RST_SDIO:       return "SDIO";
+    case ESP_RST_USB:        return "USB";
+    case ESP_RST_JTAG:       return "JTAG";
+    case ESP_RST_EFUSE:      return "EFuse error";
+    case ESP_RST_PWR_GLITCH: return "Power glitch";
+    case ESP_RST_CPU_LOCKUP: return "CPU lockup";
+    default:                 return "Unknown";
+  }
+}
+
 void handleStatus() {
   String json = "{";
   const char* stateStr = "idle";
@@ -1416,9 +1439,9 @@ void handleStatus() {
   json += ",\"flash\":{\"sketch_size\":" + String(sketchSize);
   json += ",\"sketch_free\":" + String(sketchFree);
   json += ",\"chip_size\":" + String(ESP.getFlashChipSize()) + "}";
-  // 内存信息：free_heap + RAM 占用百分比（ESP8266 共 80KB RAM）
+  // 内存信息：free_heap + RAM 占用百分比（ESP32-SOLO-1 共 320KB DRAM）
   uint32_t freeHeap = ESP.getFreeHeap();
-  uint32_t ramSize = 81920;  // ESP8266 总 RAM 80KB
+  uint32_t ramSize = 327680;  // ESP32-SOLO-1 总 RAM 320KB
   uint32_t ramUsed = ramSize - freeHeap;
   float ramPct = (float)ramUsed / ramSize * 100;
   json += ",\"memory\":{\"free_heap\":" + String(freeHeap);
@@ -1426,7 +1449,7 @@ void handleStatus() {
   json += ",\"ram_used\":" + String(ramUsed);
   json += ",\"ram_pct\":" + String(ramPct, 1) + "}";
   // 重启原因（诊断烧录崩溃用）
-  json += ",\"reset_reason\":\"" + String(ESP.getResetReason()) + "\"";
+  json += ",\"reset_reason\":\"" + jsonEscape(getResetReasonStr()) + "\"";
   json += "}";
   server.send(200, "application/json", json);
 }
@@ -1548,7 +1571,7 @@ void handleBurn() {
     return;
   }
 
-  fs::File f = LittleFS.open("/" + filename, "r");
+  File f = LittleFS.open("/" + filename, "r");
   uint32_t totalBlocks = (f.size() + 511) / 512;
   f.close();
 
@@ -1722,18 +1745,25 @@ void handleMonitorBuffer() {
 void handleFiles() {
   String json = "{\"success\":true,\"files\":[";
   bool first = true;
-  Dir dir = LittleFS.openDir("/");
-  while (dir.next()) {
-    String name = dir.fileName();
+  File root = LittleFS.open("/");
+  File entry = root.openNextFile();
+  while (entry) {
+    String name = entry.name();
+    // ESP32 LittleFS 的 name() 可能返回带 "/" 前缀，统一去掉
+    if (name.startsWith("/")) name = name.substring(1);
     // 跳过配置文件和 WebUI 静态文件
     if (name == "config.json" || name == "index.html" ||
-        name == "style.css" || name == "app.js") continue;
+        name == "style.css" || name == "app.js") {
+      entry = root.openNextFile();
+      continue;
+    }
     if (!first) json += ",";
     first = false;
     json += "{\"name\":\"" + jsonEscape(name) + "\"";
-    json += ",\"size\":" + String(dir.fileSize());
-    json += ",\"time\":" + String((uint32_t)dir.fileTime());
+    json += ",\"size\":" + String(entry.size());
+    json += ",\"time\":0";  // ESP32 LittleFS 不支持文件时间戳
     json += "}";
+    entry = root.openNextFile();
   }
   json += "]}";
   server.send(200, "application/json", json);
@@ -1783,7 +1813,7 @@ void handleGetFile() {
     server.send(404, "application/json", "{\"error\":\"not found\"}");
     return;
   }
-  fs::File f = LittleFS.open(path, "r");
+  File f = LittleFS.open(path, "r");
   if (!f) {
     server.send(500, "application/json", "{\"error\":\"open failed\"}");
     return;
@@ -1839,7 +1869,7 @@ void handleWifiScan() {
     // 用 32 字节限制（WiFi SSID 最大长度）
     json += "{\"ssid\":\"" + jsonEscape(ssid) + "\"";
     json += ",\"rssi\":" + String(rssi);
-    json += ",\"encrypted\":" + String(enc != ENC_TYPE_NONE ? "true" : "false");
+    json += ",\"encrypted\":" + String(enc != WIFI_AUTH_OPEN ? "true" : "false");
     json += ",\"enc_type\":" + String(enc);
     json += "}";
   }
@@ -2078,7 +2108,8 @@ void initHttpRoutes() {
     }
   });
   // 收集客户端 header 用于 captive portal 判断
-  server.collectHeaders("Accept", "User-Agent");
+  const char* headerKeys[] = {"Accept", "User-Agent"};
+  server.collectHeaders(headerKeys, sizeof(headerKeys) / sizeof(headerKeys[0]));
 }
 
 // ===== setup / loop =====
