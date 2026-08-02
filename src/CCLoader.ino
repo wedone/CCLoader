@@ -1,26 +1,31 @@
 /******************************************************************************
- * CCLoader WebUI - 基于 ESP8266 的 CC2530 烧录+监控一体机
+ * CCLoader WebUI - 基于 ESP32-SOLO-1 的 CC2530 烧录+监控一体机
  *
- * 接线（NodeMCU ESP8266，与 CCLib 兼容）：
- *   GPIO5  (D1) -> CC Pin 7 (RESETn)
- *   GPIO4  (D2) -> CC Pin 3 (DC)
- *   GPIO12 (D6) -> CC Pin 4 (DD)
- *   GPIO3  (RX) -> CC P0_3   (UART0 TX)  监控用
- *   GND         -> CC GND
- *   GPIO2  (D4) -> 板载蓝色 LED（状态指示）
+ * 接线（ESP32-SOLO-1 开发板）：
+ *   IO5   -> CC Pin 7 (RESETn)
+ *   IO4   -> CC Pin 3 (DC)
+ *   IO12  -> CC Pin 4 (DD)
+ *   IO16  -> CC P0_3   (UART0 TX)  监控/sniffer 用（Serial2 RX）
+ *   GND   -> CC GND
+ *   IO2   -> 板载 LED2（状态指示）
+ *   IO22  -> 板载 CH340C RXD（Serial TX，调试日志）
+ *   IO23  -> 板载 CH340C TXD（Serial RX，调试日志）
  *
  * 工作模式：
  *   - IDLE：WiFi+HTTP+SSE 在线，等待浏览器操作
  *   - BURNING：从 LittleFS 读取 BIN 烧录到 CC2530，进度通过 SSE 推送
- *   - MONITORING：Serial 切换到 CC2530 波特率，接收 P0_3 日志并通过 SSE 推送
+ *   - MONITORING：Serial2 切换到 CC2530 波特率，接收 P0_3 日志并通过 SSE 推送
+ *   - SNIFFING：Serial2 接收 ZBOSS sniffer 原始帧，HTTP chunked 透传到 PC
+ *
+ * 双串口架构：
+ *   - Serial  (UART0): 重映射到 IO22/IO23，接板载 USB，做调试日志（始终可用）
+ *   - Serial2 (UART2): IO16 RX，接 CC2530 P0_3，做监控/sniffer 数据接收
+ *   物理分离解决了 ESP8266 时代 Serial TX 写入影响 RX 接收的限制
  *
  * 无外部库依赖：
- *   - HTTP/WebServer: ESP8266WebServer (端口 80)
+ *   - HTTP/WebServer: WebServer (端口 80)
  *   - 实时推送:       原生 WiFiServer SSE (端口 81)
  *   - JSON:           String 手工拼接/解析（仅顶层简单字段）
- *
- * 原有 CC Debug 协议函数（write_debug_byte ~ RunDUP）保持不变，仅数据源
- * 从 Serial 改为 LittleFS 文件。
  ******************************************************************************/
 
 /*
@@ -113,11 +118,18 @@
 #define LOBYTE(w)           ((unsigned char)(w))
 #define HIBYTE(w)           ((unsigned char)(((unsigned short)(w) >> 8) & 0xFF))
 
-// ===== 引脚配置（NodeMCU ESP8266，与 CCLib 兼容）=====
-int DD = 12;     // GPIO12 = D6
-int DC = 4;      // GPIO4  = D2
-int RESET = 5;   // GPIO5  = D1
-int LED = 2;     // GPIO2  = D4（板载蓝色 LED）
+// ===== 引脚配置（ESP32-SOLO-1）=====
+int DD = 12;     // IO12  - CC Debug 数据（双向）
+int DC = 4;      // IO4   - CC Debug 时钟
+int RESET = 5;   // IO5   - CC Debug 复位
+int LED = 2;     // IO2   - 板载 LED2（状态指示）
+
+// ===== 串口配置（ESP32-SOLO-1）=====
+// Serial  (UART0): 重映射到 IO22(TX)/IO23(RX)，接板载 CH340C USB-TTL，做调试日志输出
+// Serial2 (UART2): IO16(RX)/IO17(TX)，接 CC2530 P0_3 (UART0 TX)，做监控/sniffer 数据接收
+//   物理分离调试串口与 CC2530 数据串口，监控/sniffer 模式下调试日志仍可正常输出
+#define CC_SERIAL_RX  16   // Serial2 RX = IO16 (U2RXD) ← CC2530 P0_3
+#define CC_SERIAL_TX  17   // Serial2 TX = IO17 (U2TXD)，未接 CC2530，仅 RX 用
 
 /******************************************************************************
  * VARIABLES - DUP DMA descriptor（原样保留）
@@ -439,13 +451,13 @@ uint32_t g_monitor_ring_total = 0;  // 累计写入字节数（单调递增，�
 
 // ===== Sniffer 抓包功能（SNIFFING 状态）=====
 // ZBOSS sniffer 固件通过 UART0 (P0_3, 115200 8N1) 输出 IEEE 802.15.4 帧
-// ESP8266 GPIO3 (RX) 接收，透传到 PC 端生成 pcap
+// ESP32-SOLO-1 Serial2 (IO16 RX) 接收，透传到 PC 端生成 pcap
 // 详见 CCLoader_Sniffer抓包改造需求.md
-#define SNIFFER_BUFFER_SIZE 16384  // 16KB 环形缓冲（32KB 会导致 ESP8266 RAM 不足无法启动）
+#define SNIFFER_BUFFER_SIZE 16384  // 16KB 环形缓冲（阶段3将扩容到 64KB，ESP32-SOLO-1 RAM 充足）
 // 动态分配：IDLE 状态不占用堆，给上传/烧录留出内存
 // enterSnifferMode 时 malloc，exitSnifferMode 时 free
 uint8_t* g_sniffer_buf = nullptr;
-volatile uint32_t g_sniffer_head = 0;   // 写入位置 (Serial → 缓冲)
+volatile uint32_t g_sniffer_head = 0;   // 写入位置 (Serial2 → 缓冲)
 volatile uint32_t g_sniffer_tail = 0;   // 读取位置 (缓冲 → HTTP stream)
 volatile uint32_t g_sniffer_total_rx = 0;
 volatile uint32_t g_sniffer_total_sent = 0;
@@ -854,8 +866,8 @@ void burnFromLittleFS(const String& filename, bool verify) {
     g_burn.percent = (blockIndex * 100) / g_burn.total_blocks;
 
     // 每 16 块推送一次进度 + 处理 WiFi（约 32 次/256KB）
-    // 原 32 块间隔在偶发慢块时可能踩 ESP8266 软件 WDT (~3.2s) 边界
-    // 16 块 ≈ 0.8-1.6s 间隔，进度条每 3% 更新一次，仍流畅
+    // 原 32 块间隔在偶发慢块时可能踩 ESP8266 软件 WDT (~3.2s) 边界，
+    // ESP32-SOLO-1 无软件 WDT 但保留 16 块节奏，进度条每 3% 更新一次更流畅
     if (blockIndex % 16 == 0 || blockIndex == g_burn.total_blocks) {
       pushBurnProgress();
       sseLoop();
@@ -1064,18 +1076,18 @@ void resetCC2530() {
   delay(10);
 }
 
-// ===== 监控模式：Serial 接收 CC2530 日志并推送 =====
+// ===== 监控模式：Serial2 接收 CC2530 日志并推送 =====
 // autoReset=true 时进入监控前自动复位 CC2530，可捕获 main() 启动日志
 void enterMonitorMode(uint32_t baud, bool autoReset) {
-  // 先复位 CC2530（在 Serial 切换前，确保从启动日志开始捕获）
+  // 先复位 CC2530（在 Serial2 切换前，确保从启动日志开始捕获）
   if (autoReset) {
     resetCC2530();
   }
-  // 切换 Serial 到 CC2530 波特率，GPIO3 接收 P0_3 日志
-  Serial.flush();
-  Serial.end();
+  // 切换 Serial2 到 CC2530 波特率，IO16 接收 P0_3 日志
+  Serial2.flush();
+  Serial2.end();
   delay(100);
-  Serial.begin(baud);
+  Serial2.begin(baud, SERIAL_8N1, CC_SERIAL_RX, CC_SERIAL_TX);
   g_monitor_baud = baud;
   g_monitor_len = 0;
   g_monitor_bytes_total = 0;
@@ -1087,30 +1099,32 @@ void enterMonitorMode(uint32_t baud, bool autoReset) {
   // 通知前端
   String json = "{\"type\":\"monitor_start\",\"baud\":" + String(baud) + "}";
   sseSend(json);
+  Serial.printf("Monitor started: baud=%u\n", baud);
 }
 
 void exitMonitorMode() {
   // 推送剩余数据
   if (g_monitor_len > 0) pushMonitorData();
-  // 恢复 Serial 到默认波特率
-  Serial.flush();
-  Serial.end();
+  // 恢复 Serial2 到默认波特率
+  Serial2.flush();
+  Serial2.end();
   delay(100);
-  Serial.begin(115200);
+  Serial2.begin(115200, SERIAL_8N1, CC_SERIAL_RX, CC_SERIAL_TX);
   g_state = STATE_IDLE;
   g_monitor_len = 0;
 
   String json = "{\"type\":\"monitor_stop\"}";
   sseSend(json);
+  Serial.println("Monitor stopped");
 }
 
 // ===== Sniffer 抓包模式（SNIFFING 状态）=====
 // ZBOSS sniffer 固件经 UART0 (P0_3, 115200 8N1) 输出 IEEE 802.15.4 帧
-// ESP8266 GPIO3 (RX) 接收原始字节存入 32KB 环形缓冲，
+// ESP32-SOLO-1 Serial2 (IO16 RX) 接收原始字节存入环形缓冲，
 // 由 /api/sniffer/stream 通过 HTTP chunked 透传到 PC，PC 端解析生成 pcap
 // 详见 CCLoader_Sniffer抓包改造需求.md
 
-// 写入环形缓冲（loop 中从 Serial 读取后调用）
+// 写入环形缓冲（loop 中从 Serial2 读取后调用）
 // 缓冲满时丢弃最旧数据并累计 drop_bytes，每满 1024 字节插入一个丢包标记包
 void snifferWrite(const uint8_t *data, size_t len) {
   for (size_t i = 0; i < len; i++) {
@@ -1157,7 +1171,7 @@ size_t snifferRead(uint8_t *out, size_t max_len) {
 
 // 进入 sniffer 模式
 // sniffer 固件上电默认启动通道 11（zb_sniffer_init 中 start_channel=11），
-// 启动时不发送通道号（避免 Serial.write 影响 RX），如需切换通道用 /api/sniffer/channel。
+// 启动时不发送通道号（避免 Serial2.write 影响 RX），如需切换通道用 /api/sniffer/channel。
 bool enterSnifferMode(uint8_t channel, uint32_t baud) {
   // 动态分配 sniffer 缓冲（IDLE 时不占用堆，给上传/烧录留内存）
   if (!g_sniffer_buf) {
@@ -1166,18 +1180,18 @@ bool enterSnifferMode(uint8_t channel, uint32_t baud) {
       return false;  // 内存不足
     }
   }
-  // 先复位 CC2530（在 Serial 切换前，确保 sniffer 固件从干净状态启动）
-  // 实测：不加复位时 Serial.available() 始终返回 0（与 monitor 模式的关键差异）
+  // 先复位 CC2530（在 Serial2 切换前，确保 sniffer 固件从干净状态启动）
+  // 实测：不加复位时 Serial2.available() 始终返回 0（与 monitor 模式的关键差异）
   resetCC2530();
-  // 切换 Serial 到 sniffer 波特率
-  Serial.flush();
-  Serial.end();
+  // 切换 Serial2 到 sniffer 波特率
+  Serial2.flush();
+  Serial2.end();
   delay(100);
-  Serial.begin(baud);
+  Serial2.begin(baud, SERIAL_8N1, CC_SERIAL_RX, CC_SERIAL_TX);
   // 等待 sniffer 固件初始化完成（zb_sniffer_init 启动默认通道 11）
   delay(200);
   // 清空 RX 缓冲（sniffer 启动期间可能输出了一些日志字节，避免污染 pcap）
-  while (Serial.available()) Serial.read();
+  while (Serial2.available()) Serial2.read();
   // 清空环形缓冲与统计
   g_sniffer_head = 0;
   g_sniffer_tail = 0;
@@ -1198,20 +1212,17 @@ bool enterSnifferMode(uint8_t channel, uint32_t baud) {
   String json = "{\"type\":\"sniffer_start\",\"channel\":" + String(channel) + "}";
   sseSend(json);
   // 若请求通道 ≠ 默认 11，自动发送 1 字节通道号切换
+  // ESP32 双串口架构：Serial2 写入不影响 Serial2 RX（与 ESP8266 单串口不同）
   if (channel != 11) {
     delay(100);  // 短暂延迟确保 sniffer 已就绪
-    Serial.write(channel);
-    Serial.flush();
+    Serial2.write(channel);
+    Serial2.flush();
     delay(200);  // 等待 sniffer 切换通道并清空 RF FIFO
-    while (Serial.available()) Serial.read();  // 清空切换期间的噪声
+    while (Serial2.available()) Serial2.read();  // 清空切换期间的噪声
     g_sniffer_head = 0;  // 清空缓冲中切换前接收的数据
     g_sniffer_tail = 0;
   }
-  // 历史问题说明（早期版本曾注释"Serial.write 会导致 RX 失效"）：
-  // - 曾观察到 sniffer 模式下 Serial.printf/println 调试输出后 RX 收不到数据
-  // - 现方案：仅发送 1 字节通道号（数据量小），发送后延迟 200ms + 清空 RX 缓冲
-  // - 如实测仍 RX 失效，回退方案：仅支持通道 11（sniffer 固件默认，无需 Serial.write）
-  // 注意：sniffer 模式运行期间不要用 Serial.printf/println 调试输出（数据量大可能影响 RX）
+  Serial.printf("Sniffer started: channel=%u baud=%u\n", channel, baud);
   return true;
 }
 
@@ -1229,24 +1240,24 @@ void exitSnifferMode() {
     free(g_sniffer_buf);
     g_sniffer_buf = nullptr;
   }
-  // 恢复 Serial 到默认波特率
-  Serial.flush();
-  Serial.end();
+  // 恢复 Serial2 到默认波特率
+  Serial2.flush();
+  Serial2.end();
   delay(100);
-  Serial.begin(115200);
+  Serial2.begin(115200, SERIAL_8N1, CC_SERIAL_RX, CC_SERIAL_TX);
   String json = "{\"type\":\"sniffer_stop\"}";
   sseSend(json);
   Serial.println("Sniffer stopped");
 }
 
-// loop 中的 sniffer 处理：从 Serial 读取数据写入环形缓冲
-// 采用与 handleMonitoring 完全一致的逐字节读取方式（Serial.readBytes 在 ESP8266
-// 上可能因 timedRead 阻塞或行为异常导致收不到数据，逐字节 read 已在 monitor 模式验证可靠）
+// loop 中的 sniffer 处理：从 Serial2 读取数据写入环形缓冲
+// 采用与 handleMonitoring 完全一致的逐字节读取方式（Serial2.readBytes 可能因 timedRead
+// 阻塞或行为异常导致收不到数据，逐字节 read 已在 monitor 模式验证可靠）
 void handleSniffing() {
   const uint16_t MAX_READ_PER_LOOP = 512;
   uint16_t readThisCall = 0;
-  while (Serial.available() && readThisCall < MAX_READ_PER_LOOP) {
-    uint8_t ch = Serial.read();
+  while (Serial2.available() && readThisCall < MAX_READ_PER_LOOP) {
+    uint8_t ch = Serial2.read();
     // 写入环形缓冲
     uint32_t next = (g_sniffer_head + 1) % SNIFFER_BUFFER_SIZE;
     if (next == g_sniffer_tail) {
@@ -1279,13 +1290,13 @@ void handleSniffing() {
 }
 
 void handleMonitoring() {
-  // 限制单次 loop 读取字节数，避免 CC2530 高速输出时 while(Serial.available())
+  // 限制单次 loop 读取字节数，避免 CC2530 高速输出时 while(Serial2.available())
   // 长时间占用 CPU，导致 server.handleClient() 被饿死、/api/status 等接口假死
   // 128 字节 ≈ 1ms @ 115200bps，足够让 loop() 每秒调度数百次 HTTP
   const uint16_t MAX_READ_PER_LOOP = 128;
   uint16_t readThisCall = 0;
-  while (Serial.available() && readThisCall < MAX_READ_PER_LOOP) {
-    uint8_t ch = Serial.read();
+  while (Serial2.available() && readThisCall < MAX_READ_PER_LOOP) {
+    uint8_t ch = Serial2.read();
     if (g_monitor_len < MONITOR_BUF_SIZE) {
       g_monitor_buf[g_monitor_len++] = ch;
       g_monitor_bytes_total++;
@@ -1308,7 +1319,7 @@ void handleMonitoring() {
 
 // 分块发送 PROGMEM 大响应（Content-Length + 分块 sendContent_P，每块 1000 字节）
 // 解决 tailscale 等 PMTU < 1500 链路的 IP 分片丢包问题：
-// ESP8266 默认 TCP MSS=1460，单 TCP 段 IP 包 1500 字节，
+// ESP32 默认 TCP MSS=1460，单 TCP 段 IP 包 1500 字节，
 // 经 tailscale (PMTU 1280) 转发时 DF=1 分片被丢弃，大响应截断。
 // 每块 1000 字节 → 单 TCP 段 IP 包 ~1040 < 1280，无需分片即可通过。
 // 禁用 Nagle（TCP_NODELAY）防止多个小块合并成超过 PMTU 的大包。
@@ -1675,7 +1686,7 @@ void handleMonitorBuffer() {
     since = (uint32_t)strtoul(server.arg("since").c_str(), NULL, 10);
   }
   // 限制单次返回最大字节数。原版可能返回全部 8KB → base64 11KB + String 拼接 22KB
-  // 临时堆分配在 ESP8266 ~50KB 堆上极易失败。默认 4KB，可下调
+  // 临时堆分配过大易碎片化，默认 4KB，可下调
   uint32_t maxBytes = 4096;
   if (server.hasArg("max_bytes")) {
     long mb = strtol(server.arg("max_bytes").c_str(), NULL, 10);
@@ -1956,13 +1967,14 @@ void handleSnifferChannel() {
     server.send(400, "application/json", "{\"error\":\"invalid channel\"}");
     return;
   }
-  // 发送 1 字节通道号给 sniffer 固件（ZBOSS 协议下行）
-  Serial.write((uint8_t)channel);
-  Serial.flush();
+  // 发送 1 字节通道号给 sniffer 固件（ZBOSS 协议下行，经 Serial2 TX → CC2530 P0_2）
+  // ESP32 双串口架构：Serial2.write 不影响 Serial2 RX，可安全发送
+  Serial2.write((uint8_t)channel);
+  Serial2.flush();
   // 等待 sniffer 切换通道并清空 RF FIFO（zb_clear_sniffer + zb_start_sniffer）
   delay(200);
   // 清空 RX 缓冲（切换期间可能输出了状态字节，避免污染新通道的 pcap）
-  while (Serial.available()) Serial.read();
+  while (Serial2.available()) Serial2.read();
   // 清空环形缓冲（避免残留的旧通道数据污染新通道的 pcap）
   g_sniffer_head = 0;
   g_sniffer_tail = 0;
@@ -2022,12 +2034,12 @@ void handleSnifferStream() {
   client.println();
 
   uint8_t buf[1024];
-  // 循环推送：先读串口入缓冲 → 读缓冲 → chunked 写客户端
-  // 注意：此 handler 阻塞期间 loop() 不执行，必须在循环内自行读串口，
-  // 否则数据丢失。缓冲在此充当串口与 WiFi 之间的解耦队列。
-  // 使用逐字节 Serial.read()（与 handleMonitoring 一致，避免 readBytes 的潜在问题）
+  // 循环推送：先读 Serial2 入缓冲 → 读缓冲 → chunked 写客户端
+  // 注意：此 handler 阻塞期间 loop() 不执行，必须在循环内自行读 Serial2，
+  // 否则数据丢失。缓冲在此充当 Serial2 与 WiFi 之间的解耦队列。
+  // 使用逐字节 Serial2.read()（与 handleMonitoring 一致，避免 readBytes 的潜在问题）
   while (client.connected() && g_state == STATE_SNIFFING) {
-    // 1. 从串口读取数据入缓冲（逐字节读取，与 handleSniffing 一致）
+    // 1. 从 Serial2 读取数据入缓冲（逐字节读取，与 handleSniffing 一致）
     handleSniffing();
     // 2. 从缓冲读取并 chunked 发送
     size_t n = snifferRead(buf, sizeof(buf));
@@ -2057,9 +2069,10 @@ void handleSnifferStream() {
     client.println("0\r\n\r\n");
   }
   g_sniffer_client_active = false;
-  // 注意：此处不用 Serial.println 调试输出（sniffer 模式下 Serial.write 可能影响 RX，
-  // 见 enterSnifferMode 注释）。stream 客户端断开后 sniffer 继续运行，loop() 中
-  // handleSniffing() 持续读取 RX 数据入缓冲，等待下一个 stream 客户端连接。
+  // ESP32 双串口架构：Serial（调试日志）与 Serial2（CC2530 数据）物理分离，
+  // 此处可安全使用 Serial.println 调试输出，不影响 sniffer RX。
+  // stream 客户端断开后 sniffer 继续运行，loop() 中
+  // handleSniffing() 持续读取 Serial2 数据入缓冲，等待下一个 stream 客户端连接。
 }
 
 void initHttpRoutes() {
@@ -2115,9 +2128,13 @@ void initHttpRoutes() {
 // ===== setup / loop =====
 void setup() {
   ProgrammerInit();
-  Serial.begin(115200);
+  // Serial 重映射到板载 USB（ESP32-SOLO-1 开发板 CH340C 接 IO22/IO23，非默认 IO1/IO3）
+  // 参数：baud, config, RX=IO23, TX=IO22
+  Serial.begin(115200, SERIAL_8N1, 23, 22);
   delay(100);
   Serial.println("\nCCLoader WebUI booting...");
+  // Serial2 初始化（CC2530 监控/sniffer 数据接收，IO16 RX）
+  Serial2.begin(115200, SERIAL_8N1, CC_SERIAL_RX, CC_SERIAL_TX);
 
   // 挂载 LittleFS
   if (!LittleFS.begin()) {
