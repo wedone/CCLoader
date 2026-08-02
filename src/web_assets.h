@@ -232,7 +232,7 @@ const char index_html[] PROGMEM = R"=====(
           <div><span class="info-label">芯片型号</span><span id="chip-model" class="info-value">-</span></div>
           <div><span class="info-label">芯片版本</span><span id="chip-revision" class="info-value">-</span></div>
           <div><span class="info-label">CPU 频率</span><span id="cpu-freq" class="info-value">-</span></div>
-          <div><span class="info-label">Flash 大小</span><span id="flash-size-info" class="info-value">-</span></div>
+          <div><span class="info-label">Flash 芯片</span><span id="flash-size-info" class="info-value">-</span></div>
         </div>
       </div>
 
@@ -252,7 +252,7 @@ const char index_html[] PROGMEM = R"=====(
         <div class="info-grid">
           <div><span class="info-label">空闲堆</span><span id="free-heap" class="info-value">-</span></div>
           <div><span class="info-label">RAM 占用</span><span id="ram-usage" class="info-value">-</span></div>
-          <div><span class="info-label">Flash 占用</span><span id="flash-usage" class="info-value">-</span></div>
+          <div><span class="info-label">应用分区</span><span id="flash-usage" class="info-value">-</span></div>
         </div>
       </div>
 
@@ -833,7 +833,7 @@ select:focus {
 )=====";
 const size_t style_css_len = 12790;
 
-// app.js (56070 bytes, application/javascript)
+// app.js (57121 bytes, application/javascript)
 const char app_js[] PROGMEM = R"=====(
 // CCLoader WebUI 前端逻辑
 // 使用 SSE (EventSource) 接收实时事件，无外部库依赖
@@ -1376,7 +1376,8 @@ async function refreshFileList() {
       item.className = 'file-item';
       if (f.name === selectedFile) item.classList.add('selected');
       const sizeKB = (f.size / 1024).toFixed(1);
-      const date = new Date(f.time * 1000).toLocaleString('zh-CN');
+      // time=0 表示未授时（AP 配网模式无 NTP），显示"刚刚"而非 1970
+      const date = (f.time > 0) ? new Date(f.time * 1000).toLocaleString('zh-CN') : '刚刚';
 
       const info = document.createElement('div');
       info.className = 'file-info';
@@ -1611,6 +1612,7 @@ $('monitor-stop-btn').addEventListener('click', async () => {
 
 function onMonitorStart(baud) {
   monitorActive = true;
+  setStateBadge('monitoring');  // 立即更新顶部徽章
   monitorBytes = 0;
   monitorBuffer = '';
   $('bytes-received').textContent = '0';
@@ -1633,6 +1635,7 @@ function onMonitorStart(baud) {
 
 function onMonitorStop() {
   monitorActive = false;
+  setStateBadge('idle');  // 立即更新顶部徽章
   $('monitor-state').textContent = '已停止';
   $('monitor-start-btn').disabled = false;
   $('monitor-stop-btn').disabled = true;
@@ -1866,6 +1869,9 @@ $('reboot-btn').addEventListener('click', async () => {
 
 // ===== 状态轮询 =====
 async function pollStatus() {
+  // sniffer stream 期间 handleSnifferStream 阻塞 WebServer（单线程），
+  // fetch('/api/status') 会超时失败，跳过避免无效请求
+  if (snifferActive && snifferStreamController) return;
   try {
     const resp = await fetch('/api/status');
     const s = await resp.json();
@@ -1892,7 +1898,7 @@ async function pollStatus() {
       const m = Math.floor((s.uptime % 3600) / 60);
       $('uptime').textContent = h + '时' + m + '分';
     }
-    // Flash 资源占用
+    // Flash 资源占用（app 分区，非物理 Flash 芯片大小）
     if (s.flash) {
       const used = (s.flash.sketch_size / 1024).toFixed(0);
       const total = ((s.flash.sketch_size + s.flash.sketch_free) / 1024).toFixed(0);
@@ -1935,6 +1941,8 @@ async function pollStatus() {
       $('chip-model').textContent = s.hardware.chip_model || '-';
       $('chip-revision').textContent = 'rev ' + (s.hardware.chip_revision !== undefined ? s.hardware.chip_revision : '-');
       $('cpu-freq').textContent = s.hardware.cpu_freq !== undefined ? s.hardware.cpu_freq + ' MHz' : '-';
+      // Flash 芯片：物理芯片大小（如 4MB），与 app 分区（如 2MB）区分
+      // app 分区大小 = sketch_size + sketch_free，在"内存信息 > 应用分区"中显示
       $('flash-size-info').textContent = s.hardware.flash_size ? (s.hardware.flash_size / 1024 / 1024).toFixed(0) + ' MB' : '-';
       $('mac-info').textContent = s.hardware.mac || '-';
       $('hostname-info').textContent = s.hardware.hostname || '-';
@@ -2019,6 +2027,7 @@ let snifferStreamBuf = new Uint8Array(0);  // 流式接收缓冲
 function onSnifferStart(channel) {
   if (snifferActive) return;  // 避免重复触发（SSE + pollStatus）
   snifferActive = true;
+  setStateBadge('sniffing');  // 立即更新顶部徽章（stream 期间 WebServer 阻塞，轮询失效）
   snifferChannel = channel;
   snifferPktCount = 0;
   snifferRxBytes = 0;
@@ -2041,6 +2050,7 @@ function onSnifferStart(channel) {
 function onSnifferStop() {
   if (!snifferActive) return;
   snifferActive = false;
+  setStateBadge('idle');  // 立即更新顶部徽章
   if (snifferStreamController) {
     snifferStreamController.abort();
     snifferStreamController = null;
@@ -2301,7 +2311,10 @@ $('sniffer-start-btn').addEventListener('click', async () => {
       $('sniffer-start-btn').disabled = false;
       return;
     }
-    // 等 SSE sniffer_start 事件触发 onSnifferStart（避免重复启动 stream）
+    // POST 成功后立即更新状态并启动 stream，不等 SSE sniffer_start 事件
+    // 原因：handleSnifferStream 阻塞 WebServer（单线程），SSE 事件可能延迟到达
+    // onSnifferStart 内有 if (snifferActive) return; 防止 SSE 事件重复触发
+    onSnifferStart(channel);
   } catch (e) {
     alert('启动失败: ' + e.message);
     $('sniffer-start-btn').disabled = false;
@@ -2382,7 +2395,7 @@ function init() {
 init();
 
 )=====";
-const size_t app_js_len = 56070;
+const size_t app_js_len = 57121;
 
 // config.json (90 bytes, application/json)
 const char config_json[] PROGMEM = R"=====(

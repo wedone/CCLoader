@@ -5,7 +5,7 @@
  *   IO5   -> CC Pin 7 (RESETn)
  *   IO4   -> CC Pin 3 (DC)
  *   IO12  -> CC Pin 4 (DD)
- *   IO16  -> CC P0_3   (UART0 TX)  监控/sniffer 用（Serial2 RX）
+ *   IO16  -> CC P0_3   (UART0 TX)  监控/sniffer 用（Serial2 RX，U2RXD 默认引脚）
  *   GND   -> CC GND
  *   IO2   -> 板载 LED2（状态指示）
  *   IO22  -> 板载 CH340C RXD（Serial TX，调试日志）
@@ -128,6 +128,10 @@ int LED = 2;     // IO2   - 板载 LED2（状态指示）
 // Serial  (UART0): 重映射到 IO22(TX)/IO23(RX)，接板载 CH340C USB-TTL，做调试日志输出
 // Serial2 (UART2): IO16(RX)/IO17(TX)，接 CC2530 P0_3 (UART0 TX)，做监控/sniffer 数据接收
 //   物理分离调试串口与 CC2530 数据串口，监控/sniffer 模式下调试日志仍可正常输出
+//   引脚选择：IO16/IO17 是 UART2 的 IO MUX 默认引脚（U2RXD/U2TXD），无冲突
+//   IO1/IO3 虽是开发板丝印 TX/RX，但它们是 UART0 的 IO MUX 默认引脚（U0TXD/U0RXD），
+//   即使 UART0 重映射到 IO22/IO23，IO3 仍可能被 UART0 IO MUX 影响，用作 UART2 RX 时存在冲突
+//   IO16/IO17 是 UART2 专用引脚，通过 IO MUX 直连 UART2，最可靠
 #define CC_SERIAL_RX  16   // Serial2 RX = IO16 (U2RXD) ← CC2530 P0_3
 #define CC_SERIAL_TX  17   // Serial2 TX = IO17 (U2TXD)，未接 CC2530，仅 RX 用
 
@@ -796,10 +800,31 @@ void sseLoop() {
 }
 
 // 向所有已连接的 SSE 客户端推送一条 event:data
+// 可靠写入：带重试机制，避免 WiFi 缓冲区满导致事件丢失
 void sseSend(const String& json) {
+  String msg = "event: message\ndata: " + json + "\n\n";
+  const char* data = msg.c_str();
+  size_t len = msg.length();
   for (int i = 0; i < SSE_MAX_CLIENTS; i++) {
     if (sseActive[i] && sseClients[i].connected()) {
-      sseClients[i].printf("event: message\ndata: %s\n\n", json.c_str());
+      size_t written = 0;
+      unsigned long start = millis();
+      while (written < len && millis() - start < 500 && sseClients[i].connected()) {
+        int w = sseClients[i].write(data + written, len - written);
+        if (w > 0) {
+          written += w;
+        } else {
+          delay(1);
+        }
+        yield();
+      }
+      if (written < len) {
+        // 写入失败，连接可能已断开，清理
+        Serial.printf("[SSE] client #%d write failed (%u/%u), disconnecting\n",
+                      i, (unsigned)written, (unsigned)len);
+        sseClients[i].stop();
+        sseActive[i] = false;
+      }
     }
   }
 }
@@ -1121,10 +1146,11 @@ void backupCC2530() {
 // 拉低 DD/DC 是调试专用副作用，会让 CC Debug 接口进入非标准电平，
 // 对运行中的应用固件有干扰，故移除
 void resetCC2530() {
+  // CC2530 RESETn 引脚时序：低电平≥10μs 复位，上升沿启动
   digitalWrite(RESET, LOW);
   delay(10);
   digitalWrite(RESET, HIGH);
-  delay(10);
+  delay(50);  // 等待 CC2530 晶振稳定和固件启动
 }
 
 // ===== 监控模式：Serial2 接收 CC2530 日志并推送 =====
@@ -1135,10 +1161,9 @@ void enterMonitorMode(uint32_t baud, bool autoReset) {
     resetCC2530();
   }
   // 切换 Serial2 到 CC2530 波特率，IO16 接收 P0_3 日志
+  // 使用 updateBaudRate 避免 end()/begin() 释放 UART 驱动导致数据丢失
   Serial2.flush();
-  Serial2.end();
-  delay(100);
-  Serial2.begin(baud, SERIAL_8N1, CC_SERIAL_RX, CC_SERIAL_TX);
+  Serial2.updateBaudRate(baud);
   g_monitor_baud = baud;
   g_monitor_len = 0;
   g_monitor_bytes_total = 0;
@@ -1158,9 +1183,7 @@ void exitMonitorMode() {
   if (g_monitor_len > 0) pushMonitorData();
   // 恢复 Serial2 到默认波特率
   Serial2.flush();
-  Serial2.end();
-  delay(100);
-  Serial2.begin(115200, SERIAL_8N1, CC_SERIAL_RX, CC_SERIAL_TX);
+  Serial2.updateBaudRate(115200);
   g_state = STATE_IDLE;
   g_monitor_len = 0;
 
@@ -1224,25 +1247,38 @@ size_t snifferRead(uint8_t *out, size_t max_len) {
 // sniffer 固件上电默认启动通道 11（zb_sniffer_init 中 start_channel=11），
 // 启动时不发送通道号（避免 Serial2.write 影响 RX），如需切换通道用 /api/sniffer/channel。
 bool enterSnifferMode(uint8_t channel, uint32_t baud) {
+  Serial.printf("[SNIFFER] enterSnifferMode: ch=%u baud=%u\n", channel, baud);
   // 动态分配 sniffer 缓冲（IDLE 时不占用堆，给上传/烧录留内存）
   if (!g_sniffer_buf) {
     g_sniffer_buf = (uint8_t*)malloc(SNIFFER_BUFFER_SIZE);
     if (!g_sniffer_buf) {
+      Serial.println("[SNIFFER] ERROR: malloc failed for sniffer buffer");
       return false;  // 内存不足
     }
+    Serial.printf("[SNIFFER] Allocated buffer: %u bytes\n", SNIFFER_BUFFER_SIZE);
   }
   // 先复位 CC2530（在 Serial2 切换前，确保 sniffer 固件从干净状态启动）
   // 实测：不加复位时 Serial2.available() 始终返回 0（与 monitor 模式的关键差异）
+  Serial.println("[SNIFFER] Resetting CC2530...");
   resetCC2530();
-  // 切换 Serial2 到 sniffer 波特率
-  Serial2.flush();
-  Serial2.end();
-  delay(100);
-  Serial2.begin(baud, SERIAL_8N1, CC_SERIAL_RX, CC_SERIAL_TX);
+  // 如果波特率与 setup 初始化的 115200 不同，用 updateBaudRate 切换
+  // 使用 updateBaudRate 避免 end()/begin() 释放 UART 驱动导致数据丢失
+  if (baud != 115200) {
+    Serial2.flush();
+    Serial2.updateBaudRate(baud);
+  }
+  Serial.printf("[SNIFFER] Serial2 ready: RX=IO%d, baud=%u\n", CC_SERIAL_RX, baud);
   // 等待 sniffer 固件初始化完成（zb_sniffer_init 启动默认通道 11）
+  Serial.println("[SNIFFER] Waiting 200ms for sniffer firmware init...");
   delay(200);
-  // 清空 RX 缓冲（sniffer 启动期间可能输出了一些日志字节，避免污染 pcap）
-  while (Serial2.available()) Serial2.read();
+  // 清空 RX 缓冲中 sniffer 启动期间的日志字节（限时 50ms，避免清空有效数据）
+  int cleared = 0;
+  unsigned long clearStart = millis();
+  while (Serial2.available() && millis() - clearStart < 50) {
+    Serial2.read();
+    cleared++;
+  }
+  Serial.printf("[SNIFFER] Cleared %d startup bytes from RX buffer\n", cleared);
   // 清空环形缓冲与统计
   g_sniffer_head = 0;
   g_sniffer_tail = 0;
@@ -1262,6 +1298,7 @@ bool enterSnifferMode(uint8_t channel, uint32_t baud) {
   // 通知前端
   String json = "{\"type\":\"sniffer_start\",\"channel\":" + String(channel) + "}";
   sseSend(json);
+  Serial.println("[SNIFFER] sniffer_start event sent via SSE");
   // 若请求通道 ≠ 默认 11，自动发送 1 字节通道号切换
   // ESP32 双串口架构：Serial2 写入不影响 Serial2 RX（与 ESP8266 单串口不同）
   if (channel != 11) {
@@ -1269,11 +1306,14 @@ bool enterSnifferMode(uint8_t channel, uint32_t baud) {
     Serial2.write(channel);
     Serial2.flush();
     delay(200);  // 等待 sniffer 切换通道并清空 RF FIFO
-    while (Serial2.available()) Serial2.read();  // 清空切换期间的噪声
+    unsigned long chClearStart = millis();
+    while (Serial2.available() && millis() - chClearStart < 50) {
+      Serial2.read();
+    }
     g_sniffer_head = 0;  // 清空缓冲中切换前接收的数据
     g_sniffer_tail = 0;
   }
-  Serial.printf("Sniffer started: channel=%u baud=%u\n", channel, baud);
+  Serial.printf("[SNIFFER] Started: channel=%u baud=%u\n", channel, baud);
   return true;
 }
 
@@ -1293,9 +1333,7 @@ void exitSnifferMode() {
   }
   // 恢复 Serial2 到默认波特率
   Serial2.flush();
-  Serial2.end();
-  delay(100);
-  Serial2.begin(115200, SERIAL_8N1, CC_SERIAL_RX, CC_SERIAL_TX);
+  Serial2.updateBaudRate(115200);
   String json = "{\"type\":\"sniffer_stop\"}";
   sseSend(json);
   Serial.println("Sniffer stopped");
@@ -1337,6 +1375,24 @@ void handleSniffing() {
     g_sniffer_head = next;
     g_sniffer_total_rx = g_sniffer_total_rx + 1;
     readThisCall++;
+  }
+  // 调试日志：每秒打印一次接收统计（仅 SNIFFING 状态）
+  static unsigned long lastDebugMs = 0;
+  static unsigned long loopCount = 0;
+  loopCount++;
+  if (g_state == STATE_SNIFFING && millis() - lastDebugMs > 1000) {
+    lastDebugMs = millis();
+    Serial.printf("[SNIFFER] rx=%u sent=%u avail=%d buf=%u drop=%u wifi=%d rssi=%d heap=%u loop=%u\n",
+                  (unsigned)g_sniffer_total_rx, (unsigned)g_sniffer_total_sent,
+                  Serial2.available(),
+                  (unsigned)((g_sniffer_head >= g_sniffer_tail) ?
+                    (g_sniffer_head - g_sniffer_tail) :
+                    (SNIFFER_BUFFER_SIZE - g_sniffer_tail + g_sniffer_head)),
+                  (unsigned)g_sniffer_drop_bytes,
+                  (int)WiFi.status(), (int)WiFi.RSSI(),
+                  (unsigned)ESP.getFreeHeap(),
+                  (unsigned)loopCount);
+    loopCount = 0;
   }
 }
 
@@ -1621,13 +1677,47 @@ void handleUpload() {
       return;
     }
     Serial.printf("Upload end: %u bytes, error=%d\n", upload.totalSize, g_upload_error);
+    // ============================================================
+    // 可靠发送上传响应：绕过 server.send()，手动写入 HTTP 响应
+    // ============================================================
+    // 根因：ESP32 WebServer 的 _currentClient.write() 在 WiFi 发送缓冲区满时
+    //       返回 0，数据丢失且无重试。server.send() 不检查 write() 返回值，
+    //       导致响应丢失，浏览器报 "Failed to fetch"。
+    //       server.client() 返回 WiFiClient 副本，setTimeout 设置的是副本的
+    //       成员变量，不影响 _currentClient。因此必须手动发送并重试。
+    int code = g_upload_error ? 500 : 200;
+    String body;
     if (g_upload_error) {
-      server.send(500, "application/json", "{\"error\":\"write failed\"}");
+      body = "{\"error\":\"write failed\"}";
     } else {
-      String resp = "{\"success\":true,\"filename\":\"" + jsonEscape(g_upload_filename) +
-                    "\",\"size\":" + String(upload.totalSize) + "}";
-      server.send(200, "application/json", resp);
+      body = "{\"success\":true,\"filename\":\"" + jsonEscape(g_upload_filename) +
+             "\",\"size\":" + String(upload.totalSize) + "}";
     }
+    String header = "HTTP/1.1 " + String(code) + (code == 200 ? " OK" : " Error") + "\r\n";
+    header += "Content-Type: application/json\r\n";
+    header += "Content-Length: " + String(body.length()) + "\r\n";
+    header += "Connection: close\r\n";
+    header += "\r\n";
+    String full = header + body;
+    // 获取 client 并设置超时（副本的 socket 与 _currentClient 共享）
+    WiFiClient client = server.client();
+    client.setTimeout(10000);
+    const char* data = full.c_str();
+    size_t len = full.length();
+    size_t written = 0;
+    unsigned long startMs = millis();
+    while (written < len && millis() - startMs < 10000 && client.connected()) {
+      int w = client.write(data + written, len - written);
+      if (w > 0) {
+        written += w;
+      } else {
+        delay(2);
+      }
+      yield();
+    }
+    Serial.printf("Upload response: %u/%u bytes sent (code=%d, %s)\n",
+                  (unsigned)written, (unsigned)len, code,
+                  written == len ? "OK" : "INCOMPLETE");
   }
 }
 
@@ -1842,7 +1932,9 @@ void handleFiles() {
     first = false;
     json += "{\"name\":\"" + jsonEscape(name) + "\"";
     json += ",\"size\":" + String(entry.size());
-    json += ",\"time\":0";  // ESP32 LittleFS 不支持文件时间戳
+    // ESP32 LittleFS 不支持文件创建时间，用当前系统时间代替
+    // （已授时为北京时间 CST-8；未授时返回 0，前端 fallback 显示 "刚刚"）
+    json += ",\"time\":" + String((uint32_t)time(nullptr));
     json += "}";
     entry = root.openNextFile();
   }
@@ -2108,6 +2200,7 @@ void handleSnifferStream() {
   // 注意：此 handler 阻塞期间 loop() 不执行，必须在循环内自行读 Serial2，
   // 否则数据丢失。缓冲在此充当 Serial2 与 WiFi 之间的解耦队列。
   // 使用逐字节 Serial2.read()（与 handleMonitoring 一致，避免 readBytes 的潜在问题）
+  // 循环中调用 sseLoop() 推送 SSE 事件，避免状态更新滞后
   while (client.connected() && g_state == STATE_SNIFFING) {
     // 1. 从 Serial2 读取数据入缓冲（逐字节读取，与 handleSniffing 一致）
     handleSniffing();
@@ -2132,6 +2225,10 @@ void handleSnifferStream() {
       // 无数据，短暂等待避免 busy-loop
       delay(5);
     }
+    // 推送 SSE 事件（如 sniffer_start/sniffer_stop），避免状态更新滞后
+    // handleSnifferStream 阻塞期间 loop() 不执行，sseLoop() 不被调用，
+    // 导致 SSE 事件堆积、前端状态显示延迟
+    sseLoop();
     yield();  // 喂狗 + WiFi 任务
   }
   // 结束 chunk
@@ -2204,7 +2301,18 @@ void setup() {
   delay(100);
   Serial.println("\nCCLoader WebUI booting...");
   // Serial2 初始化（CC2530 监控/sniffer 数据接收，IO16 RX）
-  Serial2.begin(115200, SERIAL_8N1, CC_SERIAL_RX, CC_SERIAL_TX);
+  // ESP32 UART 架构关键点：
+  //   硬件 FIFO (128字节) → IDF事件任务 → 软件RingBuffer → available()/read()
+  //   rxfifo_full_thrhd 控制何时触发 FIFO→RingBuffer 的数据搬移
+  //   默认 120 字节才触发，CC2530 小数据包(<120B)会卡在 FIFO 中无法被 available() 检测到
+  //   设为 1 实现逐字节触发，与 ESP8266 的 Serial 行为一致
+  // setRxBufferSize 必须在 begin() 之前调用
+  // Serial2.begin() 使用 IO16/IO17（UART2 IO MUX 默认引脚），无需 GPIO Matrix 重映射
+  Serial2.setRxBufferSize(4096);
+  Serial2.begin(115200, SERIAL_8N1, CC_SERIAL_RX, CC_SERIAL_TX, false, 20000UL, 1);
+  // 设置最短 RX 超时（1 symbol ≈ 0.01ms @ 115200），确保数据立即被搬到 RingBuffer
+  Serial2.setRxTimeout(1);
+  Serial.println("Serial2 initialized: RX=IO16, rxfifo_full=1, rxTimeout=1, rxBuf=4096");
 
   // 挂载 LittleFS
   // ESP32 首次烧录后 LittleFS 分区可能未格式化，begin() 失败时尝试 format
