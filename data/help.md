@@ -1,35 +1,47 @@
 # CCLoader WebUI 帮助
 
-> NodeMCU ESP8266 + CC2530 烧录/监控一体机。本文档由 `/api/help` 返回，WebUI 帮助页与 AI Agent 共用同一份内容。
-> 固件版本: v1.5
+> ESP32-SOLO-1 + CC2530 烧录/监控一体机。本文档由 `/api/help` 返回，WebUI 帮助页与 AI Agent 共用同一份内容。
+> 固件版本: v1.6
 
 ---
 
 ## 1. 接线方法
 
-NodeMCU ESP8266 与 CC2530 模块共需要 5 根线（含共地）：
+ESP32-SOLO-1 与 CC2530 模块共需要 5 根线（含共地）：
 
-| ESP8266 GPIO | NodeMCU 丝印 | 方向 | CC2530 引脚 | 用途 |
-|---|---|---|---|---|
-| GPIO5  | D1  | → | Pin 7 (RESETn)    | CC Debug 复位 |
-| GPIO4  | D2  | → | Pin 3 (DC)        | CC Debug 时钟 |
-| GPIO12 | D6  | ↔ | Pin 4 (DD)        | CC Debug 数据（双向） |
-| GPIO3  | RX  | ← | P0_3 (UART0 TX)   | 监控串口日志 |
-| GND    | GND | — | GND               | 共地（必须） |
+| ESP32-SOLO-1 | 方向 | CC2530 引脚 | 用途 |
+|---|---|---|---|
+| IO5   | → | Pin 7 (RESETn)    | CC Debug 复位 |
+| IO4   | → | Pin 3 (DC)        | CC Debug 时钟 |
+| IO12  | ↔ | Pin 4 (DD)        | CC Debug 数据（双向） |
+| IO16  | ← | P0_3 (UART0 TX)   | 监控/sniffer 串口日志（Serial2 RX） |
+| GND   | — | GND               | 共地（必须） |
 
-CC2530 的 3.3V 可从 NodeMCU 的 3V3 引脚取，电流 < 50mA。
+CC2530 的 3.3V 可从 ESP32-SOLO-1 开发板的 3V3 引脚取，电流 < 50mA。
 
 ```
-   NodeMCU ESP8266                     CC2530 模块
+   ESP32-SOLO-1                          CC2530 模块
   ┌────────────────┐                ┌─────────────────┐
   │            3V3 ├───────────────►│ VCC             │
   │            GND │◄──────────────►│ GND             │
-  │  D1 (GPIO5)    ├───────────────►│ Pin 7 RESETn    │
-  │  D2 (GPIO4)    ├───────────────►│ Pin 3 DC        │
-  │  D6 (GPIO12)   │◄──────────────►│ Pin 4 DD        │
-  │  RX (GPIO3)    │◄───────────────│ P0_3 UART0 TX   │
+  │  IO5           ├───────────────►│ Pin 7 RESETn    │
+  │  IO4           ├───────────────►│ Pin 3 DC        │
+  │  IO12          │◄──────────────►│ Pin 4 DD        │
+  │  IO16 (U2RXD)  │◄───────────────│ P0_3 UART0 TX   │
   └────────────────┘                └─────────────────┘
+
+   板载 USB-TTL（CH340C）↔ Serial 调试日志（无需外接，自动重映射）：
+     IO22 (TX) → CH340C RXD
+     IO23 (RX) ← CH340C TXD
+
+   备用串口（IO17 = Serial2 TX，未接 CC2530，预留给 CC2530 UART0 RX 双向通信）
 ```
+
+**双串口架构说明**：
+- `Serial` (UART0)：重映射到 IO22/IO23，接板载 CH340C USB-TTL，做调试日志输出
+- `Serial2` (UART2)：IO16 RX / IO17 TX，接 CC2530 P0_3，做监控/sniffer 数据接收
+- 物理分离调试串口与 CC2530 数据串口，监控/sniffer 模式下调试日志仍可正常输出
+- 解决了 ESP8266 时代单串口 TX 写入影响 RX 接收的限制，**烧录 ESP32 时无需拔掉任何线**
 
 ---
 
@@ -192,8 +204,8 @@ hex2bin('CC2530.hex', 'CC2530.bin')
 | POST | /api/monitor | 开始监控（body: {baud,auto_reset}） |
 | GET  | /api/monitor/buffer?since=N | 获取日志（断点续传） |
 | POST | /api/stop | 停止监控 / 停止抓包 |
-| POST | /api/reset | 复位 CC2530（GPIO5/RESETn，监控中也可用） |
-| POST | /api/reboot | 重启 ESP8266 |
+| POST | /api/reset | 复位 CC2530（IO5/RESETn，监控中也可用） |
+| POST | /api/reboot | 重启 ESP32-SOLO-1 |
 | GET  | /api/wifi/scan | 扫描 WiFi |
 | POST | /api/wifi/connect | 连接 WiFi（body: {ssid,password}） |
 | POST | /api/sniffer/start | 启动 Zigbee 抓包（body: {channel,baud}，必须 IDLE） |
@@ -228,14 +240,14 @@ curl -N http://10.0.0.147:81/
 
 ## 5. OTA 远程升级（免拔线）
 
-首次 USB 烧录后，后续固件升级走 WiFi，永久免拔 TX 线。升级时 LittleFS 和 WiFi 配置都保留。
+首次 USB 烧录后，后续固件升级走 WiFi。ESP32-SOLO-1 双串口架构下烧录固件无需拔任何线。升级时 LittleFS 和 WiFi 配置都保留。
 
 ```bash
 # 编译固件
-python -m platformio run
+python -m platformio run -e esp32solo1
 
 # OTA 升级（10-30 秒自动重启）
-curl -F "image=@.pio/build/nodemcuv2/firmware.bin" http://10.0.0.147/update
+curl -F "image=@.pio/build/esp32solo1/firmware.bin" http://10.0.0.147/update
 # 返回: Update Success! Rebooting...
 ```
 
@@ -243,8 +255,8 @@ curl -F "image=@.pio/build/nodemcuv2/firmware.bin" http://10.0.0.147/update
 
 ```bash
 python tools/gen_web_assets.py  # 重新生成 web_assets.h
-python -m platformio run        # 重新编译
-curl -F "image=@.pio/build/nodemcuv2/firmware.bin" http://10.0.0.147/update
+python -m platformio run -e esp32solo1        # 重新编译
+curl -F "image=@.pio/build/esp32solo1/firmware.bin" http://10.0.0.147/update
 ```
 
 升级期间 HTTP/SSE 暂不可用（约 10-30 秒），重启后自动恢复。
@@ -254,16 +266,15 @@ curl -F "image=@.pio/build/nodemcuv2/firmware.bin" http://10.0.0.147/update
 ## 6. 首次使用流程
 
 1. 按接线表接好 5 根线（CC2530 模块先不接 3V3 电源）
-2. USB 接 NodeMCU 到电脑，首次烧录固件：
+2. USB 接 ESP32-SOLO-1 开发板到电脑，首次烧录固件：
    ```
    pip install platformio
-   python -m platformio run -t upload --upload-port COM5
+   python -m platformio run -e esp32solo1 -t upload --upload-port COM5
    ```
-3. 烧录 ESP8266 时 CC2530 的 TX 线（P0_3 → RX）要拔掉，避免干扰 ESP8266 下载
-4. 烧完后插回 TX 线，给 CC2530 通电
-5. 手机/电脑连 WiFi `CCLoader-Setup`（首次无密码）
-6. 浏览器访问 `http://192.168.4.1/`，在"设置"页配 WiFi
-7. 连上 WiFi 后，访问 ESP8266 的新 IP 即可使用
+3. 给 CC2530 通电（ESP32-SOLO-1 双串口架构，烧录时无需拔掉任何线）
+4. 手机/电脑连 WiFi `CCLoader-Setup`（首次无密码）
+5. 浏览器访问 `http://192.168.4.1/`，在"设置"页配 WiFi
+6. 连上 WiFi 后，访问 ESP32-SOLO-1 的新 IP 即可使用
 
 ---
 
@@ -274,8 +285,8 @@ CCLoader 可作为 Zigbee 抓包转发器：CC2530 烧录 ZBOSS sniffer 固件�
 ### 7.1 工作原理
 
 ```
-CC2530 (sniffer固件) ──P0_3 UART0 TX──→ ESP8266 GPIO3 (RX)
-                                          │ 32KB 环形缓冲
+CC2530 (sniffer固件) ──P0_3 UART0 TX──→ ESP32-SOLO-1 IO16 (Serial2 RX)
+                                          │ 64KB 环形缓冲
                                           ▼ HTTP chunked
                                     /api/sniffer/stream
                                           │
@@ -283,7 +294,7 @@ CC2530 (sniffer固件) ──P0_3 UART0 TX──→ ESP8266 GPIO3 (RX)
                                     PC Python 脚本 → .pcap → Wireshark
 ```
 
-硬件零改动：GPIO3 (RX) ← P0_3 (UART0 TX) 这根线已接好（与监控共用）。CC2530 需先烧录 ZBOSS sniffer 固件（非 HGZBSwitch）。
+硬件零改动：IO16 (Serial2 RX) ← P0_3 (UART0 TX) 这根线已接好（与监控共用）。CC2530 需先烧录 ZBOSS sniffer 固件（非 HGZBSwitch）。
 
 **两种使用方式**：
 - **WebUI 抓包页**（浏览器可视化）：WebUI "抓包"标签页，支持通道选择、实时包列表（hex + 帧类型 + CRC 状态）、详细解析（IEEE 802.15.4 帧头：帧类型/PAN/地址）、pcap 下载。适合快速查看和调试。
@@ -298,7 +309,7 @@ IP=10.0.0.147
 # 1. 启动 sniffer（通道 11，波特率 115200）
 curl -s -X POST http://$IP/api/sniffer/start \
   -H "Content-Type: application/json" -d '{"channel":11}'
-# 返回: {"success":true,"channel":11,"baud":115200,"buffer_size":16384}
+# 返回: {"success":true,"channel":11,"baud":115200,"buffer_size":65536}
 
 # 2. 检查状态
 curl -s http://$IP/api/sniffer/status
@@ -313,11 +324,11 @@ curl -s -X POST http://$IP/api/stop
 
 ### 7.3 PC 端 pcap 生成
 
-ESP8266 只透传 ZBOSS 原始字节，PC 端 Python 脚本解析 ZBOSS 包头、提取 IEEE 802.15.4 帧、生成 pcap（DLT=230）。参考脚本及完整协议见 `CCLoader_Sniffer抓包改造需求.md`。
+ESP32-SOLO-1 只透传 ZBOSS 原始字节，PC 端 Python 脚本解析 ZBOSS 包头、提取 IEEE 802.15.4 帧、生成 pcap（DLT=230）。参考脚本及完整协议见 `CCLoader_Sniffer抓包改造需求.md`。
 
 ### 7.4 通道切换
 
-**启动时指定通道**：`POST /api/sniffer/start` 支持 `channel` 参数（11-26），默认 11。若请求通道 ≠ 11，ESP8266 会在 sniffer 启动后通过串口发送 1 字节通道号切换（ZBOSS 协议下行）。
+**启动时指定通道**：`POST /api/sniffer/start` 支持 `channel` 参数（11-26），默认 11。若请求通道 ≠ 11，ESP32-SOLO-1 会在 sniffer 启动后通过 Serial2 发送 1 字节通道号切换（ZBOSS 协议下行）。
 
 **运行时切换通道**：`POST /api/sniffer/channel` body `{"channel":15}` 发送 1 字节通道号给 sniffer 固件，切换后清空缓冲。
 
@@ -342,20 +353,17 @@ Zigbee 常用通道：11、15、20、25。
 - **stream 阻塞**：流式传输期间 HTTP 端口被占用，`/api/stop` 等请求需等 stream 客户端断开后才能响应。PC 脚本先断开 stream 再调 `/api/stop`
 - **单客户端**：同时只允许 1 个 stream 客户端，第二个返回 409 `stream busy`
 - **CC2530 固件**：必须烧录 ZBOSS sniffer 固件（非 HGZBSwitch），波特率 115200
-- **缓冲大小**：16KB（ESP8266 RAM 限制，32KB 会导致内存不足无法启动）
+- **缓冲大小**：64KB 环形缓冲（ESP32-SOLO-1 320KB DRAM 充足，动态分配，IDLE 时不占堆）
 
 ---
 
 ## 8. 常见问题
 
-**Q: 烧录 ESP8266 时报 "Timed out waiting for packet header"？**
-A: CC2530 的 TX 线干扰了 ESP8266 GPIO3 (RX)。烧录前先拔掉 CC2530 P0_3 → ESP8266 RX 这根线，烧完再插回。
-
 **Q: 监控收不到 CC2530 日志？**
-A: 1) 检查 TX 线是否插好；2) 确认 CC2530 已通电；3) 试试不同波特率（115200/57600/9600）；4) 点"复位 CC2530"触发启动日志。
+A: 1) 检查 IO16 ← P0_3 这根线是否插好；2) 确认 CC2530 已通电；3) 试试不同波特率（115200/57600/9600）；4) 点"复位 CC2530"触发启动日志。
 
 **Q: 烧录 CC2530 失败？**
-A: 1) 检查 D1/D2/D6 三根线是否接对；2) 确认 CC2530 GND 与 NodeMCU 共地；3) CC2530 需通电（3.3V）。
+A: 1) 检查 IO5/IO4/IO12 三根线是否接对；2) 确认 CC2530 GND 与 ESP32-SOLO-1 共地；3) CC2530 需通电（3.3V）。
 
 **Q: 忘了 WiFi 密码或连不上？**
 A: 在"设置"页重新扫描+连接。若 WebUI 都进不去，删除 LittleFS 中的 /config.json 或重新烧录固件可重置。
@@ -367,8 +375,7 @@ A: NTP 未同步。固件启动后通过 NTP 自动校准北京时间（UTC+8）
 A: API（curl/Agent）仅接受 .bin，浏览器端上传 .hex 会自动转换但 API 不会。参考 2.3 节的 hex2bin 算法和 Python 实现，转换后再上传。
 
 **Q: "烧录后重启烧录器"勾选项有什么用？**
-A: 烧录成功后延时 3 秒自动调用 /api/reboot 重启 ESP8266，可释放内存、重新初始化 GPIO 状态，适合连续多次烧录或烧录后立即监控的场景。
+A: 烧录成功后延时 3 秒自动调用 /api/reboot 重启 ESP32-SOLO-1，可释放内存、重新初始化 GPIO 状态，适合连续多次烧录或烧录后立即监控的场景。
 
 **Q: 如何清除 CC2530 的 Zigbee 配网信息（不擦除固件）？**
 A: 在 WebUI 烧录区点击"清除配网"按钮，或直接调用 `POST /api/nvreset`。流程：读取 CC2530 全部 Flash 到临时文件 → 清除尾部 NV 区域（最后 4KB）→ 全片擦除 → 写回。固件保留，仅清除配网信息，设备需要重新加入 Zigbee 网络。整个过程约 2 分钟，进度通过进度条显示。
-

@@ -118,7 +118,7 @@ function connectSSE() {
       case 'wifi_connect_failed':
         $('wifi-connect-status').innerHTML =
           '<strong style="color: var(--danger)">连接失败</strong>：' + (msg.ssid || '') +
-          ' 密码错误或信号太弱，ESP8266 已切回 AP 模式';
+          ' 密码错误或信号太弱，ESP32-SOLO-1 已切回 AP 模式';
         $('wifi-connect-btn').disabled = false;
         break;
       case 'status':
@@ -129,7 +129,7 @@ function connectSSE() {
 
   es.onerror = () => {
     $('ws-state').textContent = '已断开';
-    // EventSource 会自动重连，但 ESP8266 断电后需手动兜底
+    // EventSource 会自动重连，但 ESP32-SOLO-1 断电后需手动兜底
     if (es.readyState === EventSource.CLOSED) {
       if (esReconnectTimer) clearTimeout(esReconnectTimer);
       esReconnectTimer = setTimeout(connectSSE, 2000);
@@ -960,7 +960,7 @@ $('wifi-connect-btn').addEventListener('click', async () => {
     return;
   }
   $('wifi-connect-btn').disabled = true;
-  $('wifi-connect-status').textContent = '连接中...（ESP8266 切换到 STA 模式，连接成功后请切换到新 WiFi 访问）';
+  $('wifi-connect-status').textContent = '连接中...（ESP32-SOLO-1 切换到 STA 模式，连接成功后请切换到新 WiFi 访问）';
   try {
     const resp = await fetch('/api/wifi/connect', {
       method: 'POST',
@@ -971,7 +971,7 @@ $('wifi-connect-btn').addEventListener('click', async () => {
     if (result.success) {
       // 响应只是"开始连接"，真正的结果通过 SSE 或下一次状态查询得知
       $('wifi-connect-status').textContent = '正在连接，等待结果...';
-      // 等 10 秒后查询状态（如果 ESP8266 已切换 STA，AP 会断开，请求会失败）
+      // 等 10 秒后查询状态（如果 ESP32-SOLO-1 已切换 STA，AP 会断开，请求会失败）
       setTimeout(async () => {
         try {
           const sr = await fetch('/api/status');
@@ -985,9 +985,9 @@ $('wifi-connect-btn').addEventListener('click', async () => {
             $('wifi-connect-status').textContent = '连接失败，请检查密码或信号';
           }
         } catch (e) {
-          // ESP8266 已切换 STA，AP 断开，无法访问
+          // ESP32-SOLO-1 已切换 STA，AP 断开，无法访问
           $('wifi-connect-status').innerHTML =
-            'ESP8266 已切换网络模式。请将电脑/手机切回 <strong>' + ssid +
+            'ESP32-SOLO-1 已切换网络模式。请将电脑/手机切回 <strong>' + ssid +
             '</strong> WiFi，然后通过串口监视器查看新 IP，或访问路由器后台查找。';
         }
       }, 10000);
@@ -1018,7 +1018,7 @@ $('save-device-name-btn').addEventListener('click', async () => {
 });
 
 $('reboot-btn').addEventListener('click', async () => {
-  if (!confirm('确定重启 ESP8266?')) return;
+  if (!confirm('确定重启 ESP32-SOLO-1?')) return;
   try {
     await fetch('/api/reboot', { method: 'POST' });
     alert('已发送重启指令，等待重新连接...');
@@ -1042,7 +1042,7 @@ async function pollStatus() {
     if (s.config_mode !== undefined) {
       const hint = $('wifi-mode-hint');
       if (s.config_mode) {
-        hint.innerHTML = '<strong style="color: var(--warning)">配网模式</strong>：ESP8266 开放 AP "CCLoader-Setup"，请保持电脑/手机连此 AP 完成配网';
+        hint.innerHTML = '<strong style="color: var(--warning)">配网模式</strong>：ESP32-SOLO-1 开放 AP "CCLoader-Setup"，请保持电脑/手机连此 AP 完成配网';
       } else if (s.wifi && s.wifi.mode === 'sta') {
         hint.innerHTML = '<strong style="color: var(--success)">STA 模式</strong>：已连接 ' + (s.wifi.ssid || '') + '，IP ' + (s.wifi.ip || '-');
       } else {
