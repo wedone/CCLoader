@@ -60,7 +60,7 @@
 /******************************************************************************
  * 固件版本与编译标识（发版时修改 FIRMWARE_VERSION，BUILD_TIME 自动生成）
  *****************************************************************************/
-#define FIRMWARE_VERSION "v1.9"
+#define FIRMWARE_VERSION "v1.10"
 // 编译日期时间戳：由编译器 __DATE__/__TIME__ 宏自动生成（如 "Jul 30 2026 16:36:35"）
 // 用于区分同版本号的不同编译产物，无需手动维护
 #define BUILD_TIME (__DATE__ " " __TIME__)
@@ -431,6 +431,7 @@ String g_upload_filename;
 File g_upload_file;
 bool g_upload_error = false;
 bool g_upload_rejected_hex = false;  // API 上传 .hex 时拒绝（浏览器端会自动 hex2bin，API 不会）
+size_t g_upload_total_size = 0;      // 上传总大小（END 阶段保存，handleUploadResponse 用）
 
 // 配网模式标志：AP 模式下为 true，captive portal 启用
 bool g_in_config_mode = false;
@@ -1663,35 +1664,42 @@ void handleUpload() {
     if (g_upload_file) {
       g_upload_file.close();
     }
-    // .hex 拒绝响应：返回 400 + hex2bin 提示（Agent 友好）
-    if (g_upload_rejected_hex) {
-      g_upload_rejected_hex = false;
-      String resp = "{\"error\":\"hex_not_supported\","
-                    "\"message\":\"API 不支持 .hex 直传，请先在客户端转换为 .bin 再上传\","
-                    "\"hint\":\"浏览器端上传 .hex 会自动 hex2bin；API 调用需自行转换。"
-                    "算法：1) 按 Intel HEX 解析每行(冒号开头)，取 count/addr/type/data/checksum；"
-                    "2) type=0x00 数据记录写入 baseAddr+bAddr；type=0x04 设置 baseAddr=data<<16；"
-                    "type=0x02 设置 baseAddr=data<<4；type=0x01 结束；校验和=(sum(除最后字节))&0xFF 应为0；"
-                    "3) 收集所有数据按地址排序，缺失地址填 0xFF；"
-                    "4) 尾部填充 0xFF 到 256KB(0x40000) 以适配 CC2530F256。"
-                    "可参考 data/app.js 中的 hex2bin() / parseHexToMap() / mapToBin() 实现。\"}";
-      server.send(400, "application/json", resp);
-      return;
-    }
+    g_upload_total_size = upload.totalSize;
     Serial.printf("Upload end: %u bytes, error=%d\n", upload.totalSize, g_upload_error);
-    // 简化响应：直接用 server.send()，避免手动 HTTP 响应的 busy-wait 延迟
-    int code = g_upload_error ? 500 : 200;
-    String body;
-    if (g_upload_error) {
-      body = "{\"error\":\"write failed\"}";
-    } else {
-      body = "{\"success\":true,\"filename\":\"" + jsonEscape(g_upload_filename) +
-             "\",\"size\":" + String(upload.totalSize) + "}";
-    }
-    server.send(code, "application/json", body);
-    Serial.printf("Upload response sent (code=%d, %s)\n", code,
-                  g_upload_error ? "ERROR" : "OK");
+    // 响应在 handleUploadResponse() 中发送（_handleRequest 阶段）
+    // 不在上传回调中发送，避免 _parseRequest 后续读 socket 与响应发送交织
   }
+}
+
+// POST /api/upload 的处理函数（在 _handleRequest 阶段调用）
+// 响应在此发送，而非 handleUpload 上传回调中，避免连接状态混乱
+void handleUploadResponse() {
+  // .hex 拒绝响应
+  if (g_upload_rejected_hex) {
+    g_upload_rejected_hex = false;
+    String resp = "{\"error\":\"hex_not_supported\","
+                  "\"message\":\"API 不支持 .hex 直传，请先在客户端转换为 .bin 再上传\","
+                  "\"hint\":\"浏览器端上传 .hex 会自动 hex2bin；API 调用需自行转换。"
+                  "算法：1) 按 Intel HEX 解析每行(冒号开头)，取 count/addr/type/data/checksum；"
+                  "2) type=0x00 数据记录写入 baseAddr+bAddr；type=0x04 设置 baseAddr=data<<16；"
+                  "type=0x02 设置 baseAddr=data<<4；type=0x01 结束；校验和=(sum(除最后字节))&0xFF 应为0；"
+                  "3) 收集所有数据按地址排序，缺失地址填 0xFF；"
+                  "4) 尾部填充 0xFF 到 256KB(0x40000) 以适配 CC2530F256。"
+                  "可参考 data/app.js 中的 hex2bin() / parseHexToMap() / mapToBin() 实现。\"}";
+    server.send(400, "application/json", resp);
+    return;
+  }
+  int code = g_upload_error ? 500 : 200;
+  String body;
+  if (g_upload_error) {
+    body = "{\"error\":\"write failed\"}";
+  } else {
+    body = "{\"success\":true,\"filename\":\"" + jsonEscape(g_upload_filename) +
+           "\",\"size\":" + String(g_upload_total_size) + "}";
+  }
+  server.send(code, "application/json", body);
+  Serial.printf("Upload response sent (code=%d, %s)\n", code,
+                g_upload_error ? "ERROR" : "OK");
 }
 
 void handleBurn() {
@@ -2217,7 +2225,7 @@ void initHttpRoutes() {
   server.on("/api/status", HTTP_GET, handleStatus);
   server.on("/api/config", HTTP_GET, handleGetConfig);
   server.on("/api/config", HTTP_POST, handlePostConfig);
-  server.on("/api/upload", HTTP_POST, [](){ /* 响应在 handleUpload END 阶段发 */ }, handleUpload);
+  server.on("/api/upload", HTTP_POST, handleUploadResponse, handleUpload);
   server.on("/api/burn", HTTP_POST, handleBurn);
   server.on("/api/nvreset", HTTP_POST, handleNvReset);
   server.on("/api/backup", HTTP_POST, handleBackup);
