@@ -505,10 +505,32 @@ $('upload-btn').addEventListener('click', async () => {
     if (!isHex) $('upload-progress').textContent = '上传中...';
     else $('upload-progress').innerHTML += '<br>上传中...';
 
-    const resp = await fetch('/api/upload', { method: 'POST', body: formData });
-    const result = await resp.json();
+    // 用 XMLHttpRequest 代替 fetch，支持上传进度显示
+    const result = await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/upload');
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round(e.loaded / e.total * 100);
+          const loadedKB = (e.loaded / 1024).toFixed(1);
+          const totalKB = (e.total / 1024).toFixed(1);
+          const prefix = isHex ? $('upload-progress').innerHTML.split('<br>上传中')[0] + '<br>' : '';
+          $('upload-progress').innerHTML = prefix + '上传中... ' + pct + '% (' + loadedKB + '/' + totalKB + ' KB)';
+        }
+      };
+      xhr.onload = () => {
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch (e) {
+          reject(new Error('响应解析失败: ' + xhr.statusText));
+        }
+      };
+      xhr.onerror = () => reject(new Error('网络错误'));
+      xhr.send(formData);
+    });
+
     if (result.success) {
-      const html = isHex ? $('upload-progress').innerHTML + '<br>' : '';
+      const html = isHex ? $('upload-progress').innerHTML.split('<br>').slice(0, -1).join('<br>') + '<br>' : '';
       $('upload-progress').innerHTML = html + '上传成功: ' + result.filename + ' (' + result.size + ' 字节)';
       refreshFileList();
     } else {

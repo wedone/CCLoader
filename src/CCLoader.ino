@@ -60,7 +60,7 @@
 /******************************************************************************
  * 固件版本与编译标识（发版时修改 FIRMWARE_VERSION，BUILD_TIME 自动生成）
  *****************************************************************************/
-#define FIRMWARE_VERSION "v1.8"
+#define FIRMWARE_VERSION "v1.9"
 // 编译日期时间戳：由编译器 __DATE__/__TIME__ 宏自动生成（如 "Jul 30 2026 16:36:35"）
 // 用于区分同版本号的不同编译产物，无需手动维护
 #define BUILD_TIME (__DATE__ " " __TIME__)
@@ -1679,14 +1679,7 @@ void handleUpload() {
       return;
     }
     Serial.printf("Upload end: %u bytes, error=%d\n", upload.totalSize, g_upload_error);
-    // ============================================================
-    // 可靠发送上传响应：绕过 server.send()，手动写入 HTTP 响应
-    // ============================================================
-    // 根因：ESP32 WebServer 的 _currentClient.write() 在 WiFi 发送缓冲区满时
-    //       返回 0，数据丢失且无重试。server.send() 不检查 write() 返回值，
-    //       导致响应丢失，浏览器报 "Failed to fetch"。
-    //       server.client() 返回 WiFiClient 副本，setTimeout 设置的是副本的
-    //       成员变量，不影响 _currentClient。因此必须手动发送并重试。
+    // 简化响应：直接用 server.send()，避免手动 HTTP 响应的 busy-wait 延迟
     int code = g_upload_error ? 500 : 200;
     String body;
     if (g_upload_error) {
@@ -1695,31 +1688,9 @@ void handleUpload() {
       body = "{\"success\":true,\"filename\":\"" + jsonEscape(g_upload_filename) +
              "\",\"size\":" + String(upload.totalSize) + "}";
     }
-    String header = "HTTP/1.1 " + String(code) + (code == 200 ? " OK" : " Error") + "\r\n";
-    header += "Content-Type: application/json\r\n";
-    header += "Content-Length: " + String(body.length()) + "\r\n";
-    header += "Connection: close\r\n";
-    header += "\r\n";
-    String full = header + body;
-    // 获取 client 并设置超时（副本的 socket 与 _currentClient 共享）
-    WiFiClient client = server.client();
-    client.setTimeout(10000);
-    const char* data = full.c_str();
-    size_t len = full.length();
-    size_t written = 0;
-    unsigned long startMs = millis();
-    while (written < len && millis() - startMs < 10000 && client.connected()) {
-      int w = client.write(data + written, len - written);
-      if (w > 0) {
-        written += w;
-      } else {
-        delay(2);
-      }
-      yield();
-    }
-    Serial.printf("Upload response: %u/%u bytes sent (code=%d, %s)\n",
-                  (unsigned)written, (unsigned)len, code,
-                  written == len ? "OK" : "INCOMPLETE");
+    server.send(code, "application/json", body);
+    Serial.printf("Upload response sent (code=%d, %s)\n", code,
+                  g_upload_error ? "ERROR" : "OK");
   }
 }
 
