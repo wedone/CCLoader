@@ -833,7 +833,7 @@ select:focus {
 )=====";
 const size_t style_css_len = 12790;
 
-// app.js (57121 bytes, application/javascript)
+// app.js (57257 bytes, application/javascript)
 const char app_js[] PROGMEM = R"=====(
 // CCLoader WebUI 前端逻辑
 // 使用 SSE (EventSource) 接收实时事件，无外部库依赖
@@ -2065,7 +2065,9 @@ async function readSnifferStream() {
   if (snifferStreamController) return;  // 已有 stream 在读
   snifferStreamController = new AbortController();
   try {
-    const resp = await fetch('/api/sniffer/stream', { signal: snifferStreamController.signal });
+    // 端口82：独立 WiFiServer 非阻塞推送，避免端口80 WebServer 阻塞
+    const streamUrl = 'http://' + location.hostname + ':82/';
+    const resp = await fetch(streamUrl, { signal: snifferStreamController.signal });
     if (!resp.ok) {
       $('sniffer-state').textContent = 'stream 错误: ' + resp.status;
       snifferStreamController = null;
@@ -2395,7 +2397,7 @@ function init() {
 init();
 
 )=====";
-const size_t app_js_len = 57121;
+const size_t app_js_len = 57257;
 
 // config.json (90 bytes, application/json)
 const char config_json[] PROGMEM = R"=====(

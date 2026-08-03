@@ -60,7 +60,7 @@
 /******************************************************************************
  * 固件版本与编译标识（发版时修改 FIRMWARE_VERSION，BUILD_TIME 自动生成）
  *****************************************************************************/
-#define FIRMWARE_VERSION "v1.7"
+#define FIRMWARE_VERSION "v1.8"
 // 编译日期时间戳：由编译器 __DATE__/__TIME__ 宏自动生成（如 "Jul 30 2026 16:36:35"）
 // 用于区分同版本号的不同编译产物，无需手动维护
 #define BUILD_TIME (__DATE__ " " __TIME__)
@@ -389,9 +389,10 @@ enum CCLoaderState {
 };
 CCLoaderState g_state = STATE_IDLE;
 
-// 全局对象：HTTP 服务器（80），SSE 服务器（81）
+// 全局对象：HTTP 服务器（80），SSE 服务器（81），Sniffer 流服务器（82）
 WebServer server(80);
 WiFiServer sseServer(81);
+WiFiServer snifferServer(82);  // sniffer chunked 流（非阻塞，loop() 中服务）
 HTTPUpdateServer httpUpdater;  // OTA 升级服务（/update）
 #define SSE_MAX_CLIENTS 4
 WiFiClient sseClients[SSE_MAX_CLIENTS];
@@ -483,8 +484,9 @@ uint8_t g_sniffer_channel = 11;
 uint32_t g_sniffer_baud = 115200;
 unsigned long g_sniffer_start_ms = 0;
 // sniffer stream 客户端（同时只允许 1 个，避免多客户端分流数据）
-WiFiClient g_sniffer_client;
-bool g_sniffer_client_active = false;
+// 端口82 非阻塞推送，loop() 中服务
+WiFiClient g_sniffer_stream_client;
+bool g_sniffer_stream_client_active = false;
 
 // ===== 简易 JSON 工具（仅处理顶层简单 key:value，避免 ArduinoJson 依赖）=====
 // JSON 字符串内的转义：把 " 和 \ 反转义，避免破坏 JSON
@@ -1292,7 +1294,7 @@ bool enterSnifferMode(uint8_t channel, uint32_t baud) {
   g_sniffer_channel = channel;
   g_sniffer_baud = baud;
   g_sniffer_start_ms = millis();
-  g_sniffer_client_active = false;
+  g_sniffer_stream_client_active = false;
   g_state = STATE_SNIFFING;
   digitalWrite(LED, HIGH);
   // 通知前端
@@ -1320,11 +1322,11 @@ bool enterSnifferMode(uint8_t channel, uint32_t baud) {
 // 退出 sniffer 模式
 void exitSnifferMode() {
   g_state = STATE_IDLE;
-  // 断开 stream 客户端
-  if (g_sniffer_client_active && g_sniffer_client.connected()) {
-    g_sniffer_client.stop();
+  // 断开端口82 stream 客户端（非阻塞推送通道）
+  if (g_sniffer_stream_client_active && g_sniffer_stream_client.connected()) {
+    g_sniffer_stream_client.stop();
   }
-  g_sniffer_client_active = false;
+  g_sniffer_stream_client_active = false;
   digitalWrite(LED, LOW);
   // 释放 sniffer 缓冲（归还给堆，供上传/烧录使用）
   if (g_sniffer_buf) {
@@ -2172,74 +2174,68 @@ void handleSnifferStatus() {
   server.send(200, "application/json", json);
 }
 
-// GET /api/sniffer/stream  HTTP chunked 流式传输 sniffer 原始字节
-//   持续推送，客户端断开后保持 sniffer 运行（允许多次连接）
-//   仅允许 1 个客户端同时连接，避免多客户端分流数据
-void handleSnifferStream() {
-  if (g_state != STATE_SNIFFING) {
-    server.send(409, "application/json", "{\"error\":\"not sniffing\"}");
-    return;
-  }
-  if (g_sniffer_client_active) {
-    server.send(409, "application/json", "{\"error\":\"stream busy\"}");
-    return;
-  }
-  WiFiClient client = server.client();
-  g_sniffer_client = client;
-  g_sniffer_client_active = true;
-  // 发送 chunked 响应头
-  client.println("HTTP/1.1 200 OK");
-  client.println("Content-Type: application/octet-stream");
-  client.println("Transfer-Encoding: chunked");
-  client.println("Cache-Control: no-cache");
-  client.println("Connection: keep-alive");
-  client.println();
-
-  uint8_t buf[1024];
-  // 循环推送：先读 Serial2 入缓冲 → 读缓冲 → chunked 写客户端
-  // 注意：此 handler 阻塞期间 loop() 不执行，必须在循环内自行读 Serial2，
-  // 否则数据丢失。缓冲在此充当 Serial2 与 WiFi 之间的解耦队列。
-  // 使用逐字节 Serial2.read()（与 handleMonitoring 一致，避免 readBytes 的潜在问题）
-  // 循环中调用 sseLoop() 推送 SSE 事件，避免状态更新滞后
-  while (client.connected() && g_state == STATE_SNIFFING) {
-    // 1. 从 Serial2 读取数据入缓冲（逐字节读取，与 handleSniffing 一致）
-    handleSniffing();
-    // 2. 从缓冲读取并 chunked 发送
-    size_t n = snifferRead(buf, sizeof(buf));
-    if (n > 0) {
-      // chunked 格式: <hex长度>\r\n<data>\r\n
-      client.printf("%X\r\n", (unsigned int)n);
-      size_t written = 0;
-      while (written < n) {
-        int w = client.write(buf + written, n - written);
-        if (w > 0) {
-          written += w;
-        } else {
-          delay(1);
-        }
-        yield();
+// ===== 端口82 sniffer 流非阻塞推送（loop() 中调用）=====
+// 与 WebServer(80)/SSE(81) 三端口物理分离，sniffer stream 不再阻塞 WebServer
+// 单次 loop() 最多推送 1024 字节，避免其他 server 饥饿
+void snifferServerLoop() {
+  // 1. 无客户端时尝试 accept 新连接
+  if (!g_sniffer_stream_client_active) {
+    WiFiClient c = snifferServer.accept();
+    if (c) {
+      // 仅 STATE_SNIFFING 时接受连接；其他状态直接关闭
+      if (g_state != STATE_SNIFFING) {
+        c.stop();
+        return;
       }
-      client.print("\r\n");
-      g_sniffer_total_sent += n;
-    } else {
-      // 无数据，短暂等待避免 busy-loop
-      delay(5);
+      g_sniffer_stream_client = c;
+      g_sniffer_stream_client_active = true;
+      // 发送 chunked 响应头（HTTP/1.1 chunked 流）
+      g_sniffer_stream_client.println("HTTP/1.1 200 OK");
+      g_sniffer_stream_client.println("Content-Type: application/octet-stream");
+      g_sniffer_stream_client.println("Transfer-Encoding: chunked");
+      g_sniffer_stream_client.println("Cache-Control: no-cache");
+      g_sniffer_stream_client.println("Connection: keep-alive");
+      g_sniffer_stream_client.println();
+      Serial.println("[SNIFFER] stream client connected (port 82)");
     }
-    // 推送 SSE 事件（如 sniffer_start/sniffer_stop），避免状态更新滞后
-    // handleSnifferStream 阻塞期间 loop() 不执行，sseLoop() 不被调用，
-    // 导致 SSE 事件堆积、前端状态显示延迟
-    sseLoop();
-    yield();  // 喂狗 + WiFi 任务
+    return;
   }
-  // 结束 chunk
-  if (client.connected()) {
-    client.println("0\r\n\r\n");
+  // 2. 有客户端：检查连接状态
+  if (!g_sniffer_stream_client.connected()) {
+    g_sniffer_stream_client.stop();
+    g_sniffer_stream_client_active = false;
+    Serial.println("[SNIFFER] stream client disconnected (port 82)");
+    return;
   }
-  g_sniffer_client_active = false;
-  // ESP32 双串口架构：Serial（调试日志）与 Serial2（CC2530 数据）物理分离，
-  // 此处可安全使用 Serial.println 调试输出，不影响 sniffer RX。
-  // stream 客户端断开后 sniffer 继续运行，loop() 中
-  // handleSniffing() 持续读取 Serial2 数据入缓冲，等待下一个 stream 客户端连接。
+  // 3. 有客户端且连接中：从环形缓冲读数据 chunked 推送
+  //    单次最多 1024 字节，避免长时间占用 loop()
+  uint8_t buf[1024];
+  size_t n = snifferRead(buf, sizeof(buf));
+  if (n > 0) {
+    // chunked 格式: <hex长度>\r\n<data>\r\n
+    g_sniffer_stream_client.printf("%X\r\n", (unsigned int)n);
+    size_t written = 0;
+    unsigned long startMs = millis();
+    while (written < n && millis() - startMs < 100 && g_sniffer_stream_client.connected()) {
+      int w = g_sniffer_stream_client.write(buf + written, n - written);
+      if (w > 0) {
+        written += w;
+      } else {
+        delay(1);
+      }
+      yield();
+    }
+    if (written < n) {
+      // 写入失败，客户端可能已断开
+      Serial.printf("[SNIFFER] write failed %u/%u, disconnecting\n",
+                    (unsigned)written, (unsigned)n);
+      g_sniffer_stream_client.stop();
+      g_sniffer_stream_client_active = false;
+      return;
+    }
+    g_sniffer_stream_client.print("\r\n");
+    g_sniffer_total_sent += n;
+  }
 }
 
 void initHttpRoutes() {
@@ -2261,7 +2257,7 @@ void initHttpRoutes() {
   // Sniffer 抓包接口（详见 CCLoader_Sniffer抓包改造需求.md）
   server.on("/api/sniffer/start", HTTP_POST, handleSnifferStart);
   server.on("/api/sniffer/channel", HTTP_POST, handleSnifferChannel);
-  server.on("/api/sniffer/stream", HTTP_GET, handleSnifferStream);
+  // /api/sniffer/stream 已迁移到端口82（snifferServer），避免阻塞 WebServer
   server.on("/api/sniffer/status", HTTP_GET, handleSnifferStatus);
   server.on("/api/files", HTTP_GET, handleFiles);
   // /api/files/{name} - 用 UriBraces 通配符（UriRegex 在 ESP32 std::regex 下会崩溃）
@@ -2347,6 +2343,7 @@ void setup() {
   // LittleFS 保留，配置不丢失。升级后自动重启
   httpUpdater.setup(&server, "/update");
   sseServer.begin();
+  snifferServer.begin();  // 端口82：sniffer chunked 流（非阻塞）
   server.begin();
 
   Serial.println("CCLoader WebUI ready");
@@ -2409,8 +2406,9 @@ void loop() {
       handleMonitoring();
       break;
     case STATE_SNIFFING:
-      // 流式传输在 handleSnifferStream 内同步循环，这里仅在无客户端时读串口入缓冲
+      // Serial2 → 环形缓冲；端口82 非阻塞 chunked 推送给 stream 客户端
       handleSniffing();
+      snifferServerLoop();
       break;
   }
 }
