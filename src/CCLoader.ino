@@ -60,7 +60,7 @@
 /******************************************************************************
  * 固件版本与编译标识（发版时修改 FIRMWARE_VERSION，BUILD_TIME 自动生成）
  *****************************************************************************/
-#define FIRMWARE_VERSION "v1.10"
+#define FIRMWARE_VERSION "v1.14"
 // 编译日期时间戳：由编译器 __DATE__/__TIME__ 宏自动生成（如 "Jul 30 2026 16:36:35"）
 // 用于区分同版本号的不同编译产物，无需手动维护
 #define BUILD_TIME (__DATE__ " " __TIME__)
@@ -2153,6 +2153,49 @@ void handleSnifferStatus() {
   server.send(200, "application/json", json);
 }
 
+// GET /api/sniffer/stream  sniffer 数据流（端口80 WebServer 兼容接口）
+// 提供给 Python 脚本（sniffer_via_ccloader.py）使用，通过 WebServer 的 chunked API 推送
+// 注意：此接口会阻塞 WebServer 直至 sniffer 结束或客户端断开
+// WebUI 前端应使用端口82的独立 stream（避免阻塞 WebUI）
+void handleSnifferStream() {
+  if (g_state != STATE_SNIFFING) {
+    server.send(409, "application/json", "{\"error\":\"not sniffing\"}");
+    return;
+  }
+  server.chunkResponseBegin("application/octet-stream");
+  uint8_t buf[1024];
+  unsigned long lastDataMs = millis();
+  while (g_state == STATE_SNIFFING && server.client().connected()) {
+    // 关键：本 handler 阻塞期间 loop() 不会执行，handleSniffing() 无法从 Serial2
+    // 读取数据填充环形缓冲。必须在此自行读取 Serial2 → 写入环形缓冲，再 snifferRead 推送。
+    uint8_t tmp[512];
+    size_t rd = 0;
+    while (Serial2.available() && rd < sizeof(tmp)) {
+      tmp[rd++] = Serial2.read();
+    }
+    if (rd > 0) {
+      snifferWrite(tmp, rd);
+      lastDataMs = millis();
+    }
+    // 读取并丢弃客户端发来的数据，推进 TCP 栈及时处理对端 FIN（断开检测）
+    while (server.client().available()) {
+      server.client().read();
+    }
+    size_t n = snifferRead(buf, sizeof(buf));
+    if (n > 0) {
+      server.chunkWrite((const char*)buf, n);
+      g_sniffer_total_sent += n;
+      lastDataMs = millis();
+    } else {
+      delay(1);
+      // 客户端断开后 connected() 检测有延迟（TCP FIN 传递），10s 无数据兜底退出
+      if (millis() - lastDataMs > 10000) break;
+    }
+    yield();
+  }
+  server.chunkResponseEnd();
+}
+
 // ===== 端口82 sniffer 流非阻塞推送（loop() 中调用）=====
 // 与 WebServer(80)/SSE(81) 三端口物理分离，sniffer stream 不再阻塞 WebServer
 // 单次 loop() 最多推送 1024 字节，避免其他 server 饥饿
@@ -2169,11 +2212,14 @@ void snifferServerLoop() {
       g_sniffer_stream_client = c;
       g_sniffer_stream_client_active = true;
       // 发送 chunked 响应头（HTTP/1.1 chunked 流）
+      // CORS 头必须添加：前端页面从端口80加载，fetch 端口82是跨端口请求
+      // 没有 CORS 头浏览器会阻止 resp.body.getReader() 读取数据
       g_sniffer_stream_client.println("HTTP/1.1 200 OK");
       g_sniffer_stream_client.println("Content-Type: application/octet-stream");
       g_sniffer_stream_client.println("Transfer-Encoding: chunked");
       g_sniffer_stream_client.println("Cache-Control: no-cache");
       g_sniffer_stream_client.println("Connection: keep-alive");
+      g_sniffer_stream_client.println("Access-Control-Allow-Origin: *");
       g_sniffer_stream_client.println();
       Serial.println("[SNIFFER] stream client connected (port 82)");
     }
@@ -2236,7 +2282,9 @@ void initHttpRoutes() {
   // Sniffer 抓包接口（详见 CCLoader_Sniffer抓包改造需求.md）
   server.on("/api/sniffer/start", HTTP_POST, handleSnifferStart);
   server.on("/api/sniffer/channel", HTTP_POST, handleSnifferChannel);
-  // /api/sniffer/stream 已迁移到端口82（snifferServer），避免阻塞 WebServer
+  // /api/sniffer/stream 端口80兼容接口（Python脚本使用，会阻塞WebServer）
+  // WebUI 前端应使用端口82的独立 stream（非阻塞）
+  server.on("/api/sniffer/stream", HTTP_GET, handleSnifferStream);
   server.on("/api/sniffer/status", HTTP_GET, handleSnifferStatus);
   server.on("/api/files", HTTP_GET, handleFiles);
   // /api/files/{name} - 用 UriBraces 通配符（UriRegex 在 ESP32 std::regex 下会崩溃）

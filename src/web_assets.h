@@ -833,7 +833,7 @@ select:focus {
 )=====";
 const size_t style_css_len = 12790;
 
-// app.js (58168 bytes, application/javascript)
+// app.js (58289 bytes, application/javascript)
 const char app_js[] PROGMEM = R"=====(
 // CCLoader WebUI 前端逻辑
 // 使用 SSE (EventSource) 接收实时事件，无外部库依赖
@@ -2152,11 +2152,12 @@ function handleZbossPacket(type, payload) {
     hexPreview = '丢包 ' + dropped + ' B';
   } else if (type === 0x00) {
     typeStr = '<span class="pkt-type-ok">OK</span>';
-    // payload 最后 1 字节是 CRC 状态
-    const crcByte = payload.length > 0 ? payload[payload.length - 1] : 0;
+    // ZBOSS sniffer payload 末尾 2 字节：LQI(1B) + CRC 状态(1B)
+    // 只移除 1 字节会保留 LQI，导致 Wireshark 帧解析错位无法解密
+    const crcByte = payload.length > 1 ? payload[payload.length - 1] : 0;
     crcStr = (crcByte & 0x80) ? '<span class="pkt-crc-ok">OK</span>' : '<span class="pkt-crc-bad">BAD</span>';
-    // IEEE 802.15.4 帧（移除最后 1 字节 CRC 状态）
-    ieeeFrame = payload.slice(0, payload.length - 1);
+    // IEEE 802.15.4 帧（移除最后 2 字节：LQI + CRC 状态）
+    ieeeFrame = payload.slice(0, payload.length - 2);
     hexPreview = bytesToHex(ieeeFrame, 32);
     if (snifferDetailMode) {
       detail = parseIeee802154Frame(ieeeFrame);
@@ -2419,7 +2420,7 @@ function init() {
 init();
 
 )=====";
-const size_t app_js_len = 58168;
+const size_t app_js_len = 58289;
 
 // config.json (90 bytes, application/json)
 const char config_json[] PROGMEM = R"=====(

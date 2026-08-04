@@ -1315,11 +1315,12 @@ function handleZbossPacket(type, payload) {
     hexPreview = '丢包 ' + dropped + ' B';
   } else if (type === 0x00) {
     typeStr = '<span class="pkt-type-ok">OK</span>';
-    // payload 最后 1 字节是 CRC 状态
-    const crcByte = payload.length > 0 ? payload[payload.length - 1] : 0;
+    // ZBOSS sniffer payload 末尾 2 字节：LQI(1B) + CRC 状态(1B)
+    // 只移除 1 字节会保留 LQI，导致 Wireshark 帧解析错位无法解密
+    const crcByte = payload.length > 1 ? payload[payload.length - 1] : 0;
     crcStr = (crcByte & 0x80) ? '<span class="pkt-crc-ok">OK</span>' : '<span class="pkt-crc-bad">BAD</span>';
-    // IEEE 802.15.4 帧（移除最后 1 字节 CRC 状态）
-    ieeeFrame = payload.slice(0, payload.length - 1);
+    // IEEE 802.15.4 帧（移除最后 2 字节：LQI + CRC 状态）
+    ieeeFrame = payload.slice(0, payload.length - 2);
     hexPreview = bytesToHex(ieeeFrame, 32);
     if (snifferDetailMode) {
       detail = parseIeee802154Frame(ieeeFrame);
